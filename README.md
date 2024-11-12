@@ -6,6 +6,8 @@ This guide walks through the steps of creating a web page that displays your int
 
 https://updog.frostbit.in
 
+https://misc.frostbit.in/updog.mp3
+
 **Lore**
 
 I see a post every month on my neighborhood's Facebook group asking if anyone else's internet is down.  I wanted to create a 'simple' way to check my internet status and share it with my neighbors.
