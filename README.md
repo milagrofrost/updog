@@ -42,7 +42,7 @@ You’ll set up:
 
 **Main Components**
 - `https://up.frostbit.in/test`: Responds with `okayokayokay` for simple status checks.
-- `https://uplog.frostbit.in`: Serves formatted logs from cloudflare tunnel installed on OpenWrt.
+- `https://uplog.frostbit.in`: Serves the outage history, built from the logs of the cloudflare tunnel installed on OpenWrt.
 - `https://updog.frostbit.in`: Public status page showing internet status and logs.
 
 ---
@@ -74,56 +74,22 @@ Ensure the following are installed on your OpenWrt router:
 
 - `python3` (version ~ 3.11.7-1)
 
+- `python3-pip`, then `pip3 install pytz` (version ~ 2024.1)
+
 These are installed using the `opkg` package manager.
 
 
 **Set Up Nginx**
 
 
-Edit the `/etc/nginx/nginx.conf` file to include two server blocks:
+Copy [`router/nginx.conf`](router/nginx.conf) to `/etc/nginx/nginx.conf`. It has two server blocks:
 
-```nginx
-http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-
-    # Server block for internet status
-    server {
-        listen 8888;
-        root /www;
-
-        add_header "Access-Control-Allow-Origin" "https://updog.frostbit.in";
-        add_header "Access-Control-Allow-Methods" "GET, POST, OPTIONS";
-        add_header "Access-Control-Allow-Headers" "Content-Type";
-
-        location / {
-            default_type text/html;
-            return 200 'okayokayokay';
-        }
-    }
-
-    # Server block for logs
-    server {
-        listen 8889;
-        root /www;
-
-        add_header "Access-Control-Allow-Origin" "https://updog.frostbit.in";
-        add_header "Access-Control-Allow-Methods" "GET, POST, OPTIONS";
-        add_header "Access-Control-Allow-Headers" "Content-Type";
-
-        location / {
-            alias /www/logs/;
-        }
-    }
-}
-```
-
-
-These blocks will serve responses for internet status checks and logs.
 - `8888`: Responds with `okayokayokay` for status checks.
 - `8889`: Serves logs from `/www/logs/`.
 
 Access-Control-Allow-Origin headers are set to allow requests from the Cloudflare Pages.
+
+Both blocks also send a `Cache-Control` header with `max-age=0`, so browsers always check again, and an `s-maxage`, so Cloudflare answers most requests without bothering the router.
 
 
 Restart Nginx on OpenWrt:
@@ -133,119 +99,11 @@ Restart Nginx on OpenWrt:
 ```
 
 
-**Generate Cloudflare Log HTML code** 
+**Generate the Outage History Page** 
 
-Use the following Python script to format Cloudflare logs into an HTML file:
+[`router/log-to-html.py`](router/log-to-html.py) reads the Cloudflare logs from `/var/log/cloudflared.log` and generates an HTML file in `/www/logs/index.html`.
 
-
-```python
-#!/usr/bin/env python3
-
-import json
-from datetime import datetime
-import os
-import pytz
-
-def format_time(time_str):
-    dt = datetime.fromisoformat(time_str.replace('Z', '+00:00')).astimezone(pytz.timezone('US/Eastern'))
-    return dt.strftime("%B %d %Y : %I:%M:%S %p")
-
-def generate_html(file_path, output_path):
-    html_header = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Cloudflared Logs</title>
-
-        <style>
-            body {
-                font-family: Arial, sans-serif;
-                margin: 20px;
-                padding: 0;
-                background-color: #f4f4f4;
-            }
-            table {
-                width: 100%;
-                border-collapse: collapse;
-            }
-            th, td {
-                padding: 10px;
-                text-align: left;
-                border-bottom: 1px solid #ddd;
-            }
-            th {
-                background-color: #4CAF50;
-                color: white;
-            }
-            tr:nth-child(even) {
-                background-color: #f2f2f2;
-            }
-            .timestamp {
-                color: #333;
-            }
-        </style>
-    </head>
-    <body>
-        <h1>Matt's Internet Logs</h1>
-        <p>Sorted by time, most recent first</p>
-        <table>
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Message</th>
-                </tr>
-            </thead>
-            <tbody>
-    """
-
-    html_footer = """
-            </tbody>
-        </table>
-    </body>
-    </html>
-    """
-
-    seen_logs = set()  # To track seen (timestamp, message) pairs
-
-    with open(file_path) as f, open(output_path, 'w') as out_file:
-        out_file.write(html_header)
-        # Reverse the file so that the most recent logs are at the top
-        lines = reversed(list(f))
-        for line in lines:
-            try:
-                log = json.loads(line)
-                message = log['message']
-                if message == "Lost connection with the edge":
-                    message = "Lost connection with the internet"
-                elif message == "Registered tunnel connection":
-                    message = "Regained internet connection"
-
-                if message in ["Lost connection with the internet", "Regained internet connection"]:
-                    formatted_time = format_time(log['time'])
-                    log_key = (formatted_time, message)
-
-                    if log_key not in seen_logs:
-                        seen_logs.add(log_key)
-                        out_file.write(f"<tr><td class='timestamp'>{formatted_time}</td><td>{message}</td></tr>\n")
-            except json.JSONDecodeError:
-                continue
-
-        current_time = datetime.now(pytz.timezone('US/Eastern')).strftime("%B %d, %Y : %I:%M:%S %p")
-        out_file.write(f"<tr><td class='timestamp'>Last updated: {current_time}</td><td></td></tr>\n")
-        out_file.write(html_footer)
-
-if __name__ == "__main__":
-
-    output_dir = '/www/logs'
-    # Ensure the output directory exists
-    os.makedirs(output_dir, exist_ok=True)
-
-    generate_html('/var/log/cloudflared.log', '/www/logs/index.html')
-```
-
-This script reads the Cloudflare logs from `/var/log/cloudflared.log` and generates an HTML file in `/www/logs/index.html`.
+`cloudflared` keeps 4 connections to Cloudflare, and they drop and reconnect on their own all the time. One connection dropping doesn't mean the internet is down, so the script only counts an outage when all 4 are gone. Each row shows when the outage started and how long it lasted, and the top of the page shows the overall uptime.
  
 - Save the script as `/root/log-to-html.py`.
 
@@ -261,6 +119,8 @@ Add the following line:
 ```bash
 */5 * * * *  /usr/bin/python /root/log-to-html.py
 ```
+
+The tests are in [`router/test_log_to_html.py`](router/test_log_to_html.py). They need `pytz`, and you can run them from the `router` folder with `python -m unittest test_log_to_html`.
 
 **2. Cloudflare Tunnel Setup** **Create the Tunnel**  
 
@@ -301,6 +161,8 @@ ingress:
 cloudflared tunnel run home-router
 ```
 
+You can also manage the ingress rules from the Zero Trust dashboard instead of `config.yml`, which is how mine is set up now. To keep the tunnel running after a reboot, enable the OpenWrt `cloudflared` service in `/etc/config/cloudflared` rather than running it by hand.
+
 **Set Up DNS** 
 
 In your Cloudflare DNS settings:
@@ -312,93 +174,26 @@ In your Cloudflare DNS settings:
 
 ---
 
-**3. Cloudflare Page** **Write the Worker Script** Use the following Worker script for `updog.frostbit.in`:
+**3. Cloudflare Page** **The Status Page** The page for `updog.frostbit.in` is [`page/index.html`](page/index.html).
 
-```html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Internet Status</title>
-    <style>
-        body {
-            display: flex;
-            flex-direction: column; /* Stack elements vertically */
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            font-family: Arial, sans-serif;
-        }
-        .status {
-            text-align: center;
-            padding: 20px;
-            color: white;
-            font-size: 24px;
-        }
-        .up {
-            background-color: green;
-        }
-        .down {
-            background-color: red;
-        }
-        iframe {
-            margin-top: 20px; /* Add some space between the status and iframe */
-            width: 100%;
-            max-width: 800px; /* Control the maximum width of the iframe */
-            height: 500px;
-            border: none;
-        }
-    </style>
-</head>
-<body>
-    <div id="status" class="status">Checking status...</div>
-
-    <iframe src="https://uplog.frostbit.in"></iframe>
-
-    <script>
-        // Function to check the status with a timeout
-        function checkStatus() {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1000); // Timeout after 1 second
-
-            fetch('https://up.frostbit.in/test', { signal: controller.signal })
-                .then(response => response.text())
-                .then(text => {
-                    clearTimeout(timeoutId);
-                    const statusElement = document.getElementById('status');
-                    // Check if the response text contains 'okay'
-                    if (text.includes('okayokayokay')) {
-                        statusElement.textContent = "Matt Frost's internet is up";
-                        statusElement.classList.add('up');
-                    } else {
-                        statusElement.textContent = "Matt Frost's internet may be down";
-                        statusElement.classList.add('down');
-                    }
-                })
-                .catch(() => {
-                    clearTimeout(timeoutId);
-                    const statusElement = document.getElementById('status');
-                    statusElement.textContent = "Matt Frost's internet may be down";
-                    statusElement.classList.add('down');
-                });
-        }
-
-        // Check the status on page load
-        window.onload = checkStatus;
-    </script>
-</body>
-</html>
-
-```
+It checks `https://up.frostbit.in/test` once when the page loads. The check uses `cache: 'no-store'` so the browser can't answer from its own cache.
 
 **Deploy the Page** 
 1. Go to Cloudflare Workers & Pages.
  
 2. Create a new Page named `updog-frostbit`.
  
-3. Deploy the script (via Upload Assets) and bind the page to `updog.frostbit.in`.
+3. Deploy the `page` folder (via Upload Assets, or `wrangler pages deploy page --project-name updog-frostbit --branch main`) and bind the page to `updog.frostbit.in`.
+
+**Set Up Caching** 
+
+This part matters. The zone's default Browser Cache TTL overrides what nginx sends, and with the default of 4 hours, a visitor's browser can keep showing "internet is up" during an outage.
+
+In Caching > Cache Rules, add a rule for `up.frostbit.in`, `uplog.frostbit.in` and `updog.frostbit.in`:
+
+- **Cache eligibility:** eligible for cache
+- **Edge TTL:** use the cache-control header
+- **Browser TTL:** respect origin
 
 
 ---
@@ -409,13 +204,18 @@ In your Cloudflare DNS settings:
 - `https://uplog.frostbit.in` → Should show the HTML logs.
  
 - `https://updog.frostbit.in` → Should display internet status and embed logs.
+- `curl -sI https://up.frostbit.in/test` → `Cache-Control` should show `max-age=0`. If it shows `max-age=14400`, the cache rule isn't applying.
+
+**Test a Real Outage** 
+
+Run `/etc/init.d/cloudflared stop` on the router, wait about a minute and reload the status page. It should turn red. Then run `/etc/init.d/cloudflared start`. This adds a row to the outage history until the next reboot clears the log.
 
 
 **Debugging Tips**  
 - Check `cloudflared` logs for tunnel issues.
 - Check Nginx logs for server issues.
 - Check Zero Trust logs for tunnel connection status and issues.
-- Use browser developer tools to debug fetch requests from the Worker.
+- Use browser developer tools to debug fetch requests from the page.
 - Check to make sure the python script is running and updating /www/logs/index.html.
 
 
@@ -423,7 +223,7 @@ In your Cloudflare DNS settings:
 
 **Caveats**
 
-- Check your cache settings in Cloudflare to ensure the status page is always up-to-date.  I had mine set to always bypass cache, but since I'm sharing this with others, I've changed the cache settings to 1 minute.
+- The status can stay green for up to 30 seconds after an outage starts, because Cloudflare caches it that long to protect the router.  Lower `s-maxage` in `nginx.conf` if you want it tighter.
 - If too many people are checking the status page, you could kill your openwrt router.  I'm not sure how many people it can handle, but I'm guessing not many.  Maybe I'll find out O_O.
 - If the router power cycles, the tunnel logs will be cleared.  “C'est la vie”.
 - If the router is on but the tunnel is down, the logs will not be up to date until the tunnel comes back up.
