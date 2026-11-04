@@ -1,0 +1,22 @@
+name = "updog-api"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+
+routes = [
+    { pattern = "updog.frostbit.in/api/*", zone_name = "frostbit.in" }
+]
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+ALLOWED_ORIGIN = "https://updog.frostbit.in"
+STATUS_URL = "https://up.frostbit.in/test"
+HISTORY_URL = "https://uplog.frostbit.in/outages.json"
+
+# Create this with `wrangler d1 create updog`, then put its ID here.
+[[d1_databases]]
+binding = "DB"
+database_name = "updog"
+database_id = "00000000-0000-0000-0000-000000000000"

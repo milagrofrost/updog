@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Is the internet down?</title>
     <meta name="description" content="Check whether the internet is down in the neighborhood, and see recent outages.">
+    <meta property="og:title" content="Is the internet down?">
+    <meta property="og:description" content="Check right now, and see whether the neighborhood has been having problems.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://updog.frostbit.in/">
+    <meta property="og:image" content="https://updog.frostbit.in/preview.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta name="twitter:card" content="summary_large_image">
     <link id="favicon" rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23888'/></svg>">
     <style>
         :root {
@@ -21,6 +29,7 @@
             --bar-minor: #e2a93b;
             --bar-major: #d0453c;
             --bar-none: #dcd8cf;
+            --text-on-white: #23262a;
         }
         @media (prefers-color-scheme: dark) {
             :root {
@@ -91,6 +100,33 @@
         }
         .again:hover { background: rgba(255, 255, 255, .26); }
         .again:disabled { opacity: .6; cursor: default; }
+        .report-area {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(255, 255, 255, .35);
+        }
+        .report {
+            padding: 10px 16px;
+            min-height: 44px;
+            font-weight: 700;
+            color: var(--text-on-white);
+            background: #fff;
+            border: 0;
+            border-radius: 8px;
+        }
+        .report:disabled { opacity: .75; cursor: default; }
+        #reports { margin: 10px 0 0; font-weight: 600; }
+        #reports:empty { display: none; }
+        .report-area .small { margin: 10px 0 0; }
+        .hero a { color: #fff; }
+        .saved {
+            margin: 16px 0 0;
+            padding: 10px 12px;
+            font-size: 14px;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }
         :focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
         .hero :focus-visible { outline-color: #fff; }
 
@@ -228,6 +264,11 @@
             <span id="checked"></span>
             <button id="again" class="again" type="button">Check again</button>
         </div>
+        <div class="report-area">
+            <button id="report" class="report" type="button">Mine's down</button>
+            <p id="reports" role="status" aria-live="polite"></p>
+            <p class="small">Tap it if your internet isn't working, so neighbors can see it's not just them. Have Spectrum? <a href="https://www.spectrum.net/outage">Check their outage page.</a></p>
+        </div>
     </div>
 
     <section>
@@ -237,7 +278,8 @@
     </section>
 
     <footer>
-        <p>This only shows what one house's connection saw, so another street could have a different story.</p>
+        <p>The outage history only shows what one house's connection saw, so another street could have a different story.</p>
+        <p>Reports are anonymous and only counted once per household each hour. Anyone with the link can tap the button, so treat the count as a hint.</p>
         <details>
             <summary>What's updog?</summary>
             <p>Not much, what's up with you? <a href="https://github.com/milagrofrost/updog">Here's how it works.</a></p>
@@ -248,6 +290,7 @@
 <script>
     const STATUS_URL = 'https://up.frostbit.in/test';
     const HISTORY_URL = 'https://uplog.frostbit.in/outages.json';
+    const EDGE_URL = '/api';
     const STATUS_TEXT = 'okayokayokay';
     const STATUS_TIMEOUT_MS = 5000;
     const RECHECK_MS = 60000;
@@ -294,12 +337,63 @@
         byId('favicon').href = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='${encodeURIComponent(color)}'/></svg>`;
     }
 
+    let lastUp = null;
+    let edge = null;
+    let reported = false;
+
+    function downFor() {
+        const state = edge && edge.status;
+        if (!state || state.up) return '';
+        const minutes = Math.max(1, Math.round((Date.now() - Date.parse(state.since)) / 60000));
+        return ` It's been down for about ${formatDuration(minutes * 60)}.`;
+    }
+
+    function showExplanation() {
+        if (lastUp === null) return;
+        byId('explain').textContent = lastUp
+            ? 'Matt\'s connection is working right now. If yours isn\'t, the problem is probably closer to your house, so try restarting your modem.'
+            : 'Matt\'s connection isn\'t responding.' + downFor() + ' If yours is out too, it\'s probably the whole neighborhood. It could also just be Matt\'s equipment.';
+    }
+
+    function showReports(count) {
+        byId('reports').textContent = count
+            ? `${plural(count, 'household')} reported problems in the past hour.`
+            : '';
+    }
+
+    async function loadEdge() {
+        try {
+            const response = await fetch(`${EDGE_URL}/status`, { cache: 'no-store' });
+            edge = await response.json();
+            showExplanation();
+            showReports(edge.reports);
+        } catch {
+            // Everything except the report button works without this.
+        }
+        return edge;
+    }
+
+    async function sendReport() {
+        const button = byId('report');
+        button.disabled = true;
+        try {
+            const response = await fetch(`${EDGE_URL}/report`, { method: 'POST' });
+            if (!response.ok) throw new Error(response.status);
+            showReports((await response.json()).reports);
+            reported = true;
+            button.textContent = 'Thanks, you\'re counted';
+        } catch {
+            button.disabled = false;
+            button.textContent = 'Couldn\'t send that, try again';
+        }
+    }
+
     function showStatus(up) {
         byId('hero').className = 'hero ' + (up ? 'up' : 'down');
         byId('answer').textContent = up ? 'Nope, it\'s up' : 'Looks like it';
-        byId('explain').textContent = up
-            ? 'Matt\'s connection is working right now. If yours isn\'t, the problem is probably closer to your house, so try restarting your modem.'
-            : 'Matt\'s connection isn\'t responding. If yours is out too, it\'s probably the whole neighborhood. It could also just be Matt\'s equipment.';
+        lastUp = up;
+        showExplanation();
+        if (!reported) byId('report').textContent = up ? 'Mine\'s down' : 'Mine\'s down too';
         document.title = up ? 'It\'s up - Is the internet down?' : 'Looks down - Is the internet down?';
         setFavicon(up ? '#1a7a4a' : '#bf3028');
         byId('checked').textContent = 'Checked at ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
@@ -483,7 +577,7 @@
         return box;
     }
 
-    function renderHistory(data) {
+    function renderHistory(data, isSavedCopy) {
         const now = new Date();
         const trackedSince = new Date(data.tracking_since);
         const rows = prepare(data.outages, now);
@@ -494,6 +588,9 @@
         const why = o => WHY[o.section] || 'Cause unknown';
 
         const parts = [];
+        if (isSavedCopy) {
+            parts.push(el('p', 'saved', `Matt's connection is unreachable, so this is the last saved copy, from ${formatWhen(new Date(data.updated))}. It won't include the current outage.`));
+        }
         const stats = el('div', 'stats');
         const last = outages[0];
         stats.append(
@@ -531,18 +628,28 @@
             const response = await fetch(HISTORY_URL, { cache: 'no-store' });
             renderHistory(await response.json());
         } catch {
-            if (byId('history').querySelector('.panel')) return;
-            byId('history').replaceChildren(el('p', 'muted', 'The outage history is stored at Matt\'s house, so it can\'t load while his connection is down. Check back once it\'s up.'));
+            const saved = await loadEdge();
+            if (saved && saved.history) {
+                renderHistory(saved.history, true);
+            } else if (!byId('history').querySelector('.panel')) {
+                byId('history').replaceChildren(el('p', 'muted', 'The outage history can\'t load right now. Check back in a little while.'));
+            }
         }
     }
 
-    byId('again').addEventListener('click', () => { checkStatus(); loadHistory(); });
+    function refresh() {
+        checkStatus();
+        loadEdge();
+    }
 
-    checkStatus();
+    byId('again').addEventListener('click', () => { refresh(); loadHistory(); });
+    byId('report').addEventListener('click', sendReport);
+
+    refresh();
     loadHistory();
-    setInterval(() => { if (!document.hidden) checkStatus(); }, RECHECK_MS);
+    setInterval(() => { if (!document.hidden) refresh(); }, RECHECK_MS);
     setInterval(() => { if (!document.hidden) loadHistory(); }, HISTORY_RELOAD_MS);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) { checkStatus(); loadHistory(); } });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { refresh(); loadHistory(); } });
 </script>
 </body>
 </html>
