@@ -3,73 +3,546 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Internet Status</title>
+    <title>Is the internet down?</title>
+    <meta name="description" content="Check whether the internet is down in the neighborhood, and see recent outages.">
+    <link id="favicon" rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23888'/></svg>">
     <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #f6f4ef;
+            --card: #ffffff;
+            --text: #23262a;
+            --muted: #5f656c;
+            --line: #e3dfd6;
+            --up: #1a7a4a;
+            --down: #bf3028;
+            --checking: #5f656c;
+            --bar-ok: #7cc49c;
+            --bar-minor: #e2a93b;
+            --bar-major: #d0453c;
+            --bar-none: #dcd8cf;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #17191c;
+                --card: #212428;
+                --text: #eceae5;
+                --muted: #a4a9af;
+                --line: #33373c;
+                --up: #1a7a4a;
+                --down: #bf3028;
+                --bar-ok: #3f8f66;
+                --bar-none: #393d43;
+            }
+        }
+        * { box-sizing: border-box; }
         body {
-            display: flex;
-            flex-direction: column; /* Stack elements vertically */
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
             margin: 0;
-            font-family: Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
         }
-        .status {
-            text-align: center;
-            padding: 20px;
-            color: white;
-            font-size: 24px;
+        main {
+            max-width: 640px;
+            margin: 0 auto;
+            padding: 24px 16px 48px;
         }
-        .up {
-            background-color: green;
+        .hero {
+            padding: 28px 24px;
+            border-radius: 16px;
+            color: #fff;
+            background: var(--checking);
+            transition: background-color .2s;
         }
-        .down {
-            background-color: red;
+        .hero.up { background: var(--up); }
+        .hero.down { background: var(--down); }
+        .hero h1 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 500;
         }
-        iframe {
-            margin-top: 20px; /* Add some space between the status and iframe */
-            width: 100%;
-            max-width: 800px; /* Control the maximum width of the iframe */
-            height: 500px;
-            border: none;
+        .answer {
+            margin: 4px 0 12px;
+            font-size: clamp(44px, 13vw, 68px);
+            font-weight: 800;
+            line-height: 1.05;
+            letter-spacing: -.02em;
+        }
+        .hero p { margin: 0 0 8px; }
+        .checked {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 4px 12px;
+            margin-top: 16px;
+            font-size: 14px;
+        }
+        button {
+            font: inherit;
+            cursor: pointer;
+        }
+        .again {
+            padding: 6px 12px;
+            min-height: 36px;
+            color: #fff;
+            background: rgba(255, 255, 255, .16);
+            border: 1px solid rgba(255, 255, 255, .55);
+            border-radius: 8px;
+        }
+        .again:hover { background: rgba(255, 255, 255, .26); }
+        .again:disabled { opacity: .6; cursor: default; }
+        :focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
+        .hero :focus-visible { outline-color: #fff; }
+
+        h2 {
+            margin: 36px 0 4px;
+            font-size: 22px;
+            line-height: 1.25;
+        }
+        h3 { margin: 0; font-size: 16px; }
+        .muted { color: var(--muted); }
+        .small { font-size: 14px; }
+        section > p { margin: 0 0 16px; }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin: 16px 0;
+        }
+        .stat {
+            padding: 12px;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+        }
+        .stat .label { font-size: 13px; color: var(--muted); }
+        .stat .value { font-size: 20px; font-weight: 700; line-height: 1.25; }
+        .stat .detail { font-size: 13px; color: var(--muted); }
+
+        .panel {
+            padding: 16px;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+        }
+        .bars {
+            display: flex;
+            gap: 1px;
+            height: 44px;
+            margin: 10px 0 6px;
+            touch-action: pan-y;
+            cursor: pointer;
+        }
+        .bars div {
+            flex: 1;
+            min-width: 0;
+            border-radius: 1px;
+            background: var(--bar-ok);
+        }
+        .bars .none { background: var(--bar-none); }
+        .bars .minor { background: var(--bar-minor); }
+        .bars .major { background: var(--bar-major); }
+        .bars .picked { outline: 2px solid var(--text); outline-offset: 1px; }
+        .bar-ends {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: var(--muted);
+        }
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 14px;
+            margin-top: 10px;
+            font-size: 13px;
+            color: var(--muted);
+        }
+        .legend i {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            margin-right: 5px;
+            border-radius: 2px;
+        }
+        #day { min-height: 21px; margin: 10px 0 0; font-size: 14px; }
+
+        .list { margin: 16px 0 0; padding: 0; list-style: none; }
+        .list li {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: 0 12px;
+            padding: 10px 0;
+            border-top: 1px solid var(--line);
+        }
+        .list li:first-child { border-top: 0; padding-top: 0; }
+        .list li:last-child { padding-bottom: 0; }
+        .when { font-weight: 600; }
+        .lasted { font-variant-numeric: tabular-nums; }
+        .why { flex-basis: 100%; font-size: 14px; color: var(--muted); }
+        .link-button {
+            margin-top: 12px;
+            padding: 8px 0 0;
+            color: inherit;
+            background: none;
+            border: 0;
+            text-decoration: underline;
+        }
+        details {
+            margin-top: 8px;
+            padding: 12px 16px;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+        }
+        summary { cursor: pointer; font-weight: 600; }
+        details p { margin: 8px 0 0; }
+        footer {
+            margin-top: 32px;
+            font-size: 14px;
+            color: var(--muted);
+        }
+        footer p { margin: 0 0 8px; }
+        a { color: inherit; }
+        @media (max-width: 480px) {
+            .stats { grid-template-columns: 1fr; }
+            .stat { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; }
+            .stat .label { flex-basis: 100%; }
+            .hero { padding: 24px 20px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .hero { transition: none; }
         }
     </style>
 </head>
 <body>
-    <div id="status" class="status">Checking status...</div>
+<main>
+    <div id="hero" class="hero">
+        <h1>Is the internet down?</h1>
+        <div id="status" role="status" aria-live="polite">
+            <p id="answer" class="answer">Checking&hellip;</p>
+            <p id="explain">Trying to reach Matt's house in the neighborhood.</p>
+        </div>
+        <div class="checked">
+            <span id="checked"></span>
+            <button id="again" class="again" type="button">Check again</button>
+        </div>
+    </div>
 
-    <iframe src="https://uplog.frostbit.in"></iframe>
+    <section>
+        <h2>Has it been happening to anyone else?</h2>
+        <p class="muted">Here's when Matt's connection went down. If the times line up with yours, it probably wasn't just you.</p>
+        <div id="history"><p class="muted">Loading outage history&hellip;</p></div>
+    </section>
 
-    <script>
-        // Function to check the status with a timeout
-        function checkStatus() {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1000); // Timeout after 1 second
+    <footer>
+        <p>This only shows what one house's connection saw, so another street could have a different story.</p>
+        <details>
+            <summary>What's updog?</summary>
+            <p>Not much, what's up with you? <a href="https://github.com/milagrofrost/updog">Here's how it works.</a></p>
+        </details>
+    </footer>
+</main>
 
-            fetch('https://up.frostbit.in/test', { signal: controller.signal, cache: 'no-store' })
-                .then(response => response.text())
-                .then(text => {
-                    clearTimeout(timeoutId);
-                    const statusElement = document.getElementById('status');
-                    // Check if the response text contains 'okay'
-                    if (text.includes('okayokayokay')) {
-                        statusElement.textContent = "Matt Frost's internet is up";
-                        statusElement.classList.add('up');
-                    } else {
-                        statusElement.textContent = "Matt Frost's internet may be down";
-                        statusElement.classList.add('down');
-                    }
-                })
-                .catch(() => {
-                    clearTimeout(timeoutId);
-                    const statusElement = document.getElementById('status');
-                    statusElement.textContent = "Matt Frost's internet may be down";
-                    statusElement.classList.add('down');
-                });
+<script>
+    const STATUS_URL = 'https://up.frostbit.in/test';
+    const HISTORY_URL = 'https://uplog.frostbit.in/outages.json';
+    const STATUS_TEXT = 'okayokayokay';
+    const STATUS_TIMEOUT_MS = 5000;
+    const RECHECK_MS = 60000;
+    const HISTORY_RELOAD_MS = 300000;
+    const NOTICEABLE_SECONDS = 60;
+    const BAR_DAYS = 90;
+    const LIST_LENGTH = 8;
+    const DAY_MS = 86400000;
+    const MAJOR_DAY_SECONDS = 600;
+
+    const WHY = { isp: 'Internet provider outage', unclear: 'Cause unknown' };
+    const MATTS_END = {
+        'Router reboot or power loss': 'Matt\'s router restarted or lost power',
+        'USB adapter disconnected': 'A cable or adapter at Matt\'s house',
+        'Tunnel restart': 'Matt was working on the status page',
+        'Tunnel or Cloudflare problem: internet was fine': 'This page had a problem, but the internet was fine',
+    };
+
+    const byId = id => document.getElementById(id);
+
+    function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+    }
+
+    /* ----- Is it down right now? ----- */
+
+    async function reachable() {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
+        try {
+            const response = await fetch(STATUS_URL, { signal: controller.signal, cache: 'no-store' });
+            return (await response.text()).includes(STATUS_TEXT);
+        } catch {
+            return false;
+        } finally {
+            clearTimeout(timer);
         }
+    }
 
-        // Check the status on page load
-        window.onload = checkStatus;
-    </script>
+    function setFavicon(color) {
+        byId('favicon').href = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='${encodeURIComponent(color)}'/></svg>`;
+    }
+
+    function showStatus(up) {
+        byId('hero').className = 'hero ' + (up ? 'up' : 'down');
+        byId('answer').textContent = up ? 'Nope, it\'s up' : 'Looks like it';
+        byId('explain').textContent = up
+            ? 'Matt\'s connection is working right now. If yours isn\'t, the problem is probably closer to your house, so try restarting your modem.'
+            : 'Matt\'s connection isn\'t responding. If yours is out too, it\'s probably the whole neighborhood. It could also just be Matt\'s equipment.';
+        document.title = up ? 'It\'s up - Is the internet down?' : 'Looks down - Is the internet down?';
+        setFavicon(up ? '#1a7a4a' : '#bf3028');
+        byId('checked').textContent = 'Checked at ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+    }
+
+    let checking = false;
+
+    async function checkStatus() {
+        if (checking) return;
+        checking = true;
+        byId('again').disabled = true;
+        // Try twice, so one slow request on a phone doesn't tell someone it's down.
+        const up = await reachable() || await reachable();
+        showStatus(up);
+        byId('again').disabled = false;
+        checking = false;
+    }
+
+    /* ----- Has it been happening? ----- */
+
+    function formatDuration(seconds) {
+        const minutes = Math.round(seconds / 60);
+        if (seconds < 60) return `${Math.round(seconds)} sec`;
+        if (minutes < 60) return `${minutes} min`;
+        const hours = Math.floor(minutes / 60);
+        const rest = minutes % 60;
+        return rest ? `${hours} hr ${rest} min` : `${hours} hr`;
+    }
+
+    function formatWhen(date) {
+        return date.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    }
+
+    function formatDay(date) {
+        return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    function timeAgo(date, now) {
+        const days = Math.round((startOfDay(now) - startOfDay(date)) / DAY_MS);
+        if (days >= 1) return days === 1 ? 'Yesterday' : `${days} days ago`;
+        const hours = Math.floor((now - date) / 3600000);
+        if (hours >= 1) return hours === 1 ? '1 hour ago' : `${hours} hours ago`;
+        return 'Under an hour ago';
+    }
+
+    function plural(count, word) {
+        return `${count} ${word}${count === 1 ? '' : 's'}`;
+    }
+
+    function prepare(rows, now) {
+        return rows.map(row => {
+            const start = new Date(row.start);
+            const end = row.end ? new Date(row.end) : null;
+            return { ...row, startDate: start, endDate: end, seconds: ((end || now) - start) / 1000 };
+        }).sort((a, b) => b.startDate - a.startDate);
+    }
+
+    function stat(label, value, detail) {
+        const node = el('div', 'stat');
+        node.append(el('div', 'label', label), el('div', 'value', value));
+        if (detail) node.append(el('div', 'detail', detail));
+        return node;
+    }
+
+    function periodStat(label, outages, days, now, trackedSince) {
+        const cutoff = now - days * DAY_MS;
+        const inPeriod = outages.filter(o => o.startDate >= cutoff);
+        const total = inPeriod.reduce((sum, o) => sum + o.seconds, 0);
+        const covered = trackedSince <= cutoff;
+        return stat(label, plural(inPeriod.length, 'outage'),
+            inPeriod.length ? `${formatDuration(total)} total` : (covered ? 'None at all' : 'None so far'));
+    }
+
+    function startOfDay(date) {
+        return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    }
+
+    function buildDays(outages, now, trackedSince) {
+        const today = startOfDay(now);
+        const days = [];
+        for (let back = BAR_DAYS - 1; back >= 0; back--) {
+            const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - back);
+            const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() - back + 1);
+            let seconds = 0;
+            let count = 0;
+            for (const outage of outages) {
+                const overlap = Math.min(end, outage.endDate || now) - Math.max(start, outage.startDate);
+                if (overlap > 0) {
+                    seconds += overlap / 1000;
+                    count++;
+                }
+            }
+            days.push({ start, seconds, count, tracked: end > trackedSince });
+        }
+        return days;
+    }
+
+    function dayClass(day) {
+        if (!day.tracked) return 'none';
+        if (!day.count) return '';
+        return day.seconds >= MAJOR_DAY_SECONDS ? 'major' : 'minor';
+    }
+
+    function dayText(day) {
+        const name = formatDay(day.start);
+        if (!day.tracked) return `${name}: from before tracking started`;
+        if (!day.count) return `${name}: no outages`;
+        return `${name}: ${plural(day.count, 'outage')}, ${formatDuration(day.seconds)} total`;
+    }
+
+    function timeline(outages, now, trackedSince) {
+        const panel = el('div', 'panel');
+        panel.append(el('h3', '', `Last ${BAR_DAYS} days`));
+
+        const days = buildDays(outages, now, trackedSince);
+        const bad = days.filter(d => d.count).length;
+        const bars = el('div', 'bars');
+        bars.setAttribute('role', 'img');
+        bars.setAttribute('aria-label', `Daily outage chart for the last ${BAR_DAYS} days. ${plural(bad, 'day')} had an outage. They're all listed below.`);
+        const cells = days.map(day => {
+            const cell = el('div', dayClass(day));
+            cell.title = dayText(day);
+            bars.append(cell);
+            return cell;
+        });
+
+        const caption = el('p', 'muted', 'Tap or hover over a day for details.');
+        caption.id = 'day';
+        const pick = event => {
+            const box = bars.getBoundingClientRect();
+            const ratio = Math.min(Math.max((event.clientX - box.left) / box.width, 0), 0.9999);
+            const index = Math.floor(ratio * days.length);
+            cells.forEach((cell, i) => cell.classList.toggle('picked', i === index));
+            caption.textContent = dayText(days[index]);
+        };
+        bars.addEventListener('pointermove', pick);
+        bars.addEventListener('pointerdown', pick);
+
+        const ends = el('div', 'bar-ends');
+        ends.append(el('span', '', formatDay(days[0].start)), el('span', '', 'Today'));
+
+        const legend = el('div', 'legend');
+        for (const [color, label] of [['--bar-ok', 'No outages'], ['--bar-minor', 'Under 10 min'], ['--bar-major', '10 min or more'], ['--bar-none', 'Not tracked']]) {
+            const item = el('span');
+            const swatch = el('i');
+            swatch.style.background = `var(${color})`;
+            item.append(swatch, label);
+            legend.append(item);
+        }
+        panel.append(bars, ends, caption, legend);
+        return panel;
+    }
+
+    function outageItem(outage, why) {
+        const item = el('li');
+        item.append(el('span', 'when', formatWhen(outage.startDate)),
+                    el('span', 'lasted', outage.endDate ? formatDuration(outage.seconds) : 'Still going'),
+                    el('span', 'why', why));
+        return item;
+    }
+
+    function outageList(outages, whyFor, limit) {
+        const wrapper = el('div');
+        const list = el('ul', 'list');
+        outages.slice(0, limit || outages.length).forEach(o => list.append(outageItem(o, whyFor(o))));
+        wrapper.append(list);
+        if (limit && outages.length > limit) {
+            const more = el('button', 'link-button', `Show all ${outages.length}`);
+            more.type = 'button';
+            more.addEventListener('click', () => {
+                wrapper.replaceWith(outageList(outages, whyFor));
+            });
+            wrapper.append(more);
+        }
+        return wrapper;
+    }
+
+    function fold(title, description, outages, whyFor) {
+        const box = el('details');
+        box.append(el('summary', '', `${title} (${outages.length})`), el('p', 'muted small', description), outageList(outages, whyFor));
+        return box;
+    }
+
+    function renderHistory(data) {
+        const now = new Date();
+        const trackedSince = new Date(data.tracking_since);
+        const rows = prepare(data.outages, now);
+        const neighborhood = rows.filter(r => r.section !== 'not_isp');
+        const outages = neighborhood.filter(r => r.seconds >= NOTICEABLE_SECONDS || !r.endDate);
+        const blips = neighborhood.filter(r => r.seconds < NOTICEABLE_SECONDS && r.endDate);
+        const mattsEnd = rows.filter(r => r.section === 'not_isp');
+        const why = o => WHY[o.section] || 'Cause unknown';
+
+        const parts = [];
+        const stats = el('div', 'stats');
+        const last = outages[0];
+        stats.append(
+            !last ? stat('Last outage', 'None yet')
+                : !last.endDate ? stat('Last outage', 'Right now')
+                : stat('Last outage', timeAgo(last.startDate, now), `Lasted ${formatDuration(last.seconds)}`),
+            periodStat('Past 30 days', outages, 30, now, trackedSince),
+            periodStat('Past 90 days', outages, 90, now, trackedSince));
+        parts.push(stats, timeline(outages, now, trackedSince));
+
+        const recent = el('div', 'panel');
+        recent.style.marginTop = '8px';
+        recent.append(el('h3', '', 'Recent outages'));
+        if (outages.length) {
+            recent.append(outageList(outages, why, LIST_LENGTH));
+        } else {
+            recent.append(el('p', 'muted', 'No outages recorded.'));
+        }
+        parts.push(recent);
+
+        if (blips.length) {
+            parts.push(fold('Brief blips', 'These lasted under a minute, so you may not have noticed them.', blips, why));
+        }
+        if (mattsEnd.length) {
+            parts.push(fold('Problems on Matt\'s end', 'These weren\'t caused by the internet provider, so your connection should have been fine.', mattsEnd,
+                o => MATTS_END[o.cause] || o.cause));
+        }
+        const since = trackedSince.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' });
+        parts.push(el('p', 'muted small', `Outages tracked since ${since}. History updates every 5 minutes.`));
+        byId('history').replaceChildren(...parts);
+    }
+
+    async function loadHistory() {
+        try {
+            const response = await fetch(HISTORY_URL, { cache: 'no-store' });
+            renderHistory(await response.json());
+        } catch {
+            if (byId('history').querySelector('.panel')) return;
+            byId('history').replaceChildren(el('p', 'muted', 'The outage history is stored at Matt\'s house, so it can\'t load while his connection is down. Check back once it\'s up.'));
+        }
+    }
+
+    byId('again').addEventListener('click', () => { checkStatus(); loadHistory(); });
+
+    checkStatus();
+    loadHistory();
+    setInterval(() => { if (!document.hidden) checkStatus(); }, RECHECK_MS);
+    setInterval(() => { if (!document.hidden) loadHistory(); }, HISTORY_RELOAD_MS);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { checkStatus(); loadHistory(); } });
+</script>
 </body>
 </html>
