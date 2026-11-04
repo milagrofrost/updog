@@ -42,8 +42,8 @@ You’ll set up:
 
 **Main Components**
 - `https://up.frostbit.in/test`: Responds with `okayokayokay` for simple status checks.
-- `https://uplog.frostbit.in`: Serves the outage history, built from the logs of the cloudflare tunnel installed on OpenWrt.
-- `https://updog.frostbit.in`: Public status page showing internet status and logs.
+- `https://uplog.frostbit.in`: Serves the outage history, as a plain page and as `outages.json` for the status page.
+- `https://updog.frostbit.in`: Public status page answering "is the internet down?" and showing recent outages for the neighbors.
 
 ---
 
@@ -103,7 +103,7 @@ Restart Nginx on OpenWrt:
 
 [`router/log-to-html.py`](router/log-to-html.py) reads the Cloudflare logs from `/var/log/cloudflared.log` and generates an HTML file in `/www/logs/index.html`.
 
-`cloudflared` keeps 4 connections to Cloudflare, and they drop and reconnect on their own all the time. One connection dropping doesn't mean the internet is down, so the script only counts an outage when all 4 are gone. Each row shows when the outage started and how long it lasted, and the top of the page shows the overall uptime.
+`cloudflared` keeps 4 connections to Cloudflare, and they drop and reconnect on their own all the time. One connection dropping doesn't mean the internet is down, so the script only counts an outage when all 4 are gone. Each row shows when the outage started and how long it lasted. It also writes `/www/logs/outages.json`, which is what the status page reads, and saves finished outages to `/root/updog/history.json` so they survive a reboot.
  
 - Save the script as `/root/log-to-html.py`.
 
@@ -121,6 +121,26 @@ Add the following line:
 ```
 
 The tests are in [`router/test_log_to_html.py`](router/test_log_to_html.py). They need `pytz`, and you can run them from the `router` folder with `python -m unittest test_log_to_html`.
+
+**Sort Outages by Cause** 
+
+[`router/updog-probe.sh`](router/updog-probe.sh) runs all the time and records whether the link to the modem, the modem, the ISP's gateway and the internet are reachable. It only writes when something changes, plus a small heartbeat file every 5 minutes for spotting reboots and power loss.
+
+The script uses that to sort each outage:
+
+- **ISP:** the modem answered, but the internet didn't.
+- **Not the ISP:** the router rebooted or lost power, the USB adapter disconnected, the tunnel was restarted, or the internet was fine for an outage of at least 60 seconds.
+- **Unclear:** the link to the modem dropped (that could be the modem, the cable or the ISP), the modem stopped responding, the outage was too short to tell, or it happened before the probe was installed.
+
+The probe assumes your WAN is `eth1` and your modem answers at `192.168.100.1`. Change those at the top of the script if yours are different.
+
+```bash
+cp router/updog-probe.sh /root/updog-probe.sh
+cp router/updog-probe.init /etc/init.d/updog-probe
+chmod +x /root/updog-probe.sh /etc/init.d/updog-probe
+/etc/init.d/updog-probe enable
+/etc/init.d/updog-probe start
+```
 
 **2. Cloudflare Tunnel Setup** **Create the Tunnel**  
 
@@ -176,7 +196,10 @@ In your Cloudflare DNS settings:
 
 **3. Cloudflare Page** **The Status Page** The page for `updog.frostbit.in` is [`page/index.html`](page/index.html).
 
-It checks `https://up.frostbit.in/test` once when the page loads. The check uses `cache: 'no-store'` so the browser can't answer from its own cache.
+It answers the two things neighbors actually ask:
+
+- **Is it down right now?** It checks `https://up.frostbit.in/test` when the page loads and every minute after that. The check uses `cache: 'no-store'` so the browser can't answer from its own cache, and it tries twice so one slow request doesn't show red.
+- **Has it been happening to anyone else?** It reads `https://uplog.frostbit.in/outages.json` and shows quick stats, a 90-day chart and the recent outages. Blips under a minute and problems on your end are folded away.
 
 **Deploy the Page** 
 1. Go to Cloudflare Workers & Pages.
@@ -203,12 +226,14 @@ In Caching > Cache Rules, add a rule for `up.frostbit.in`, `uplog.frostbit.in` a
  
 - `https://uplog.frostbit.in` → Should show the HTML logs.
  
-- `https://updog.frostbit.in` → Should display internet status and embed logs.
+- `https://uplog.frostbit.in/outages.json` → Should return the outage data.
+ 
+- `https://updog.frostbit.in` → Should display internet status and recent outages.
 - `curl -sI https://up.frostbit.in/test` → `Cache-Control` should show `max-age=0`. If it shows `max-age=14400`, the cache rule isn't applying.
 
 **Test a Real Outage** 
 
-Run `/etc/init.d/cloudflared stop` on the router, wait about a minute and reload the status page. It should turn red. Then run `/etc/init.d/cloudflared start`. This adds a row to the outage history until the next reboot clears the log.
+Run `/etc/init.d/cloudflared stop` on the router, wait about a minute and reload the status page. It should turn red. Then run `/etc/init.d/cloudflared start`. This adds a row under "Problems on Matt's end". To remove it, delete it from `/root/updog/history.json`.
 
 
 **Debugging Tips**  
@@ -225,7 +250,9 @@ Run `/etc/init.d/cloudflared stop` on the router, wait about a minute and reload
 
 - The status can stay green for up to 30 seconds after an outage starts, because Cloudflare caches it that long to protect the router.  Lower `s-maxage` in `nginx.conf` if you want it tighter.
 - If too many people are checking the status page, you could kill your openwrt router.  I'm not sure how many people it can handle, but I'm guessing not many.  Maybe I'll find out O_O.
-- If the router power cycles, the tunnel logs will be cleared.  “C'est la vie”.
+- If the router power cycles, the tunnel logs will be cleared, but finished outages are saved.  The start of the outage can be up to 5 minutes off, since that's how often the heartbeat is saved.
+- The outage history lives on the router, so it can't load while the internet is down.  “C'est la vie”.
+- If the probe is down during an outage, an outage of 60 seconds or more could wrongly show as "internet was fine".
 - If the router is on but the tunnel is down, the logs will not be up to date until the tunnel comes back up.
 - The logs will update every 5 mins, so the internet may be back up before the logs are updated on the status page.
 - If you update the tunnel version, check the to make sure the tunnel comes back up after the update.  There's one time I had a bad version and the tunnel wouldn't come back up.
