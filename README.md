@@ -31,6 +31,27 @@ PLUS, you get to tell people about "UpDog".
 
 This guide may have some missing steps or incorrect information.  I had created this a while ago and ended up dumping all my info into ChatGPT to create the documentation for me.  This is going to be more of a concept guide than a full step by step guide.  I'll try to fill in the blanks as I go.
 
+That drawing is how UpDog started. It has grown a little since then:
+
+```mermaid
+flowchart TD
+    Neighbor["Neighbor's browser"] --> Page["Status page on Cloudflare Pages<br/>updog.frostbit.in"]
+    Neighbor -->|"Is it up?"| Up["up.frostbit.in"]
+    Neighbor -->|"Outage history"| Log["uplog.frostbit.in"]
+    Neighbor -->|"Saved copy and reports"| Api["Cloudflare Worker<br/>updog.frostbit.in/api"]
+    Api -->|"Checks every minute"| Up
+    Api -->|"Copies history"| Log
+    Up --> Tunnel["Cloudflare Tunnel"]
+    Log --> Tunnel
+    subgraph Router["OpenWrt router"]
+        Tunnel --> Nginx["nginx"]
+        Nginx --> Files["outages.json"]
+        Script["log-to-html.py"] --> Files
+        Probe["updog-probe.sh"] --> Script
+        Tunnel -.->|"Logs"| Script
+    end
+```
+
 You’ll set up:
 
 1. A Cloudflare Tunnel to expose your OpenWrt router services.
@@ -57,7 +78,6 @@ You’ll set up:
 
 **Some values in this doc to look out for and replace**
 - `frostbit.in`: Your domain name.
-- `10.10.101.1`: Your OpenWrt router IP.
 - `updog-frostbit`: Your Cloudflare Page name.
 - `Matt Frost`: Your name.
 - `US/Eastern`: Your timezone.
@@ -82,7 +102,7 @@ These are installed using the `opkg` package manager.
 **Set Up Nginx**
 
 
-Copy [`router/nginx.conf`](router/nginx.conf) to `/etc/nginx/nginx.conf`. It has two server blocks:
+Copy [`router/nginx.conf`](router/nginx.conf) to `/etc/nginx/nginx.conf`. It has two server blocks, which only listen on localhost because only the tunnel needs them. If you're changing the addresses on a running router, use `restart` rather than `reload`:
 
 - `8888`: Responds with `okayokayokay` for status checks.
 - `8889`: Serves logs from `/www/logs/`.
@@ -163,14 +183,14 @@ cloudflared tunnel create home-router
 
 
 ```yaml
-tunnel: 92b3e10f-2565-4440-8f2c-7cedf3dd1b7f
-credentials-file: /root/.cloudflared/92b3e10f.json
+tunnel: <your-tunnel-id>
+credentials-file: /etc/cloudflared/<your-tunnel-id>.json
 
 ingress:
   - hostname: up.frostbit.in
-    service: http://10.10.101.1:8888
+    service: http://127.0.0.1:8888
   - hostname: uplog.frostbit.in
-    service: http://10.10.101.1:8889
+    service: http://127.0.0.1:8889
   - service: http_status:404
 ```
  
@@ -221,6 +241,34 @@ In Caching > Cache Rules, add a rule for `up.frostbit.in`, `uplog.frostbit.in` a
 
 ---
 
+**Keep It Working During an Outage** 
+
+The history lives on the router, so on its own it can't load during an outage. [`worker/`](worker/) is a small Cloudflare Worker that doesn't need your house to be online. It checks the router every minute, keeps a copy of the outage history, and counts "mine's down" reports from neighbors. It all fits in Cloudflare's free tier. It runs at `updog.frostbit.in/api/*`, on the same hostname as the page, so it stays public even if you protect the rest of the domain with Cloudflare Access.
+
+```bash
+cd worker
+wrangler d1 create updog            # put the ID it prints in wrangler.toml
+wrangler d1 execute updog --remote --file=schema.sql
+wrangler secret put REPORT_SALT     # any long random string
+wrangler deploy
+```
+
+Reports never store an address. Each one is a hash of the address, the date and that secret, which is enough to count a household once per hour and nothing else. The Worker's tests run with `node --test` from the `worker` folder.
+
+**Stop the Cache Being Skipped** 
+
+Add a URL rewrite Transform Rule for `up.frostbit.in` and `uplog.frostbit.in` that clears the query string (just `up` and `uplog`, not the page). Otherwise `?anything` skips the edge cache and reaches your router.
+
+**Get Told When It's Down** 
+
+In Notifications, add a Tunnel Health alert for when the tunnel goes down. Skip the degraded status, because single connections drop all the time.
+
+**Share It** 
+
+[`share/`](share/) has a QR code for the neighborhood post, and `page/preview.png` is the image shown when the link gets shared.
+
+---
+
 **4. Testing** **Verify Each Endpoint**  
 - `https://up.frostbit.in/test` → Should return `okayokayokay`.
  
@@ -256,7 +304,7 @@ Run `/etc/init.d/cloudflared stop` on the router, wait about a minute and reload
 - If the router is on but the tunnel is down, the logs will not be up to date until the tunnel comes back up.
 - The logs will update every 5 mins, so the internet may be back up before the logs are updated on the status page.
 - If you update the tunnel version, check the to make sure the tunnel comes back up after the update.  There's one time I had a bad version and the tunnel wouldn't come back up.
-- No you don't get notifications if the internet goes down.  We're not that fancy here.
+- Anyone with the link can tap "Mine's down", so treat the count as a hint.  We're still not that fancy here.
 - Is there a better way to do this?  Probably.
 - Should you be installing all these packages and assigning all these extra functions to a poor little Raspberry Pi 4 that's already running a critical service for your home network?  Probably not.  But here we are.
 
