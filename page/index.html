@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Internet Status</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column; /* Stack elements vertically */
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        .status {
+            text-align: center;
+            padding: 20px;
+            color: white;
+            font-size: 24px;
+        }
+        .up {
+            background-color: green;
+        }
+        .down {
+            background-color: red;
+        }
+        iframe {
+            margin-top: 20px; /* Add some space between the status and iframe */
+            width: 100%;
+            max-width: 800px; /* Control the maximum width of the iframe */
+            height: 500px;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="status" class="status">Checking status...</div>
+
+    <iframe src="https://uplog.frostbit.in"></iframe>
+
+    <script>
+        // Function to check the status with a timeout
+        function checkStatus() {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 1000); // Timeout after 1 second
+
+            fetch('https://up.frostbit.in/test', { signal: controller.signal, cache: 'no-store' })
+                .then(response => response.text())
+                .then(text => {
+                    clearTimeout(timeoutId);
+                    const statusElement = document.getElementById('status');
+                    // Check if the response text contains 'okay'
+                    if (text.includes('okayokayokay')) {
+                        statusElement.textContent = "Matt Frost's internet is up";
+                        statusElement.classList.add('up');
+                    } else {
+                        statusElement.textContent = "Matt Frost's internet may be down";
+                        statusElement.classList.add('down');
+                    }
+                })
+                .catch(() => {
+                    clearTimeout(timeoutId);
+                    const statusElement = document.getElementById('status');
+                    statusElement.textContent = "Matt Frost's internet may be down";
+                    statusElement.classList.add('down');
+                });
+        }
+
+        // Check the status on page load
+        window.onload = checkStatus;
+    </script>
+</body>
+</html>
