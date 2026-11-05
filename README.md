@@ -144,15 +144,17 @@ The tests are in [`router/test_log_to_html.py`](router/test_log_to_html.py). The
 
 **Sort Outages by Cause** 
 
-[`router/updog-probe.sh`](router/updog-probe.sh) runs all the time and records whether the link to the modem, the modem, the ISP's gateway and the internet are reachable. It only writes when something changes, plus a small heartbeat file every 5 minutes for spotting reboots and power loss.
+[`router/updog-probe.sh`](router/updog-probe.sh) runs all the time and records the link to the modem, the modem, the public IP and route, the ISP's gateway and the internet. The local checks run every 5 seconds and the internet checks every 15. It only writes when something changes, plus an hourly heartbeat that proves it's still running and a small file every 5 minutes for spotting reboots and power loss.
 
-The script uses that to sort each outage:
+The tunnel can take a few minutes to notice the connection has gone, so the script uses this to work out when an outage really started, as well as to sort it:
 
 - **ISP:** the modem answered, but the internet didn't.
 - **Not the ISP:** the router rebooted or lost power, the USB adapter disconnected, the tunnel was restarted, or the internet was fine for an outage of at least 60 seconds.
-- **Unclear:** the link to the modem dropped (that could be the modem, the cable or the ISP), the modem stopped responding, the outage was too short to tell, or it happened before the probe was installed.
+- **Unclear:** the link to the modem dropped (that could be the modem, the cable or the ISP), the modem stopped responding, the outage was too short to tell, the probe wasn't running, or it happened before the probe was installed.
 
 The probe assumes your WAN is `eth1` and your modem answers at `192.168.100.1`. Change those at the top of the script if yours are different.
+
+This used to be a separate script called `wan-modem-monitor`, which logged to `/root/wan-monitor.log` and never checked the internet. If that log exists, the script still reads it for older outages. It can rule out the link and modem for those, but it can't clear the ISP.
 
 ```bash
 cp router/updog-probe.sh /root/updog-probe.sh
@@ -300,7 +302,7 @@ Run `/etc/init.d/cloudflared stop` on the router, wait about a minute and reload
 - If too many people are checking the status page, you could kill your openwrt router.  I'm not sure how many people it can handle, but I'm guessing not many.  Maybe I'll find out O_O.
 - If the router power cycles, the tunnel logs will be cleared, but finished outages are saved.  The start of the outage can be up to 5 minutes off, since that's how often the heartbeat is saved.
 - The outage history lives on the router, so it can't load while the internet is down.  “C'est la vie”.
-- If the probe is down during an outage, an outage of 60 seconds or more could wrongly show as "internet was fine".
+- If the probe was down during an outage, that outage shows as unclear rather than guessing.  It can only tell to within about an hour, since that's how often the heartbeat is logged.
 - If the router is on but the tunnel is down, the logs will not be up to date until the tunnel comes back up.
 - The logs will update every 5 mins, so the internet may be back up before the logs are updated on the status page.
 - If you update the tunnel version, check the to make sure the tunnel comes back up after the update.  There's one time I had a bad version and the tunnel wouldn't come back up.

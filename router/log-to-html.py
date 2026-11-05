@@ -4,9 +4,11 @@
 cloudflared keeps 4 connections to Cloudflare, and they drop and reconnect
 individually all the time. An outage is only counted when none are left.
 
-updog-probe.sh records whether the modem and the internet were reachable, which
-is how each outage gets sorted into ISP, not the ISP, or unclear. The tunnel log
-is wiped on reboot, so finished outages are saved to the history file.
+updog-probe.sh records whether the link, modem, gateway and internet were up,
+which is how each outage gets sorted into ISP, not the ISP, or unclear. It also
+shows when the trouble really began, since the tunnel can take minutes to notice.
+The tunnel log is wiped on reboot, so finished outages are saved to the history
+file. wan-monitor.log is the older record from before the probe did all of this.
 """
 
 import json
@@ -19,6 +21,7 @@ import pytz
 LOG_PATH = '/var/log/cloudflared.log'
 OUTPUT_PATH = '/www/logs/index.html'
 STATE_DIR = '/root/updog'
+OLD_MONITOR_LOG = '/root/wan-monitor.log'
 TIMEZONE = pytz.timezone('US/Eastern')
 
 REGISTERED = 'Registered tunnel connection'
@@ -37,6 +40,8 @@ CAUSE_RESTART = 'Tunnel restart'
 CAUSE_TUNNEL = 'Tunnel or Cloudflare problem: internet was fine'
 CAUSE_LINK = 'Link to the modem dropped: modem, cable or ISP'
 CAUSE_MODEM = 'Modem stopped responding'
+CAUSE_UPSTREAM = 'Link and modem were fine: ISP or Cloudflare'
+CAUSE_NO_PROBE = 'The probe was not running'
 CAUSE_SHORT = 'Too short to tell'
 CAUSE_BEFORE = 'Before cause tracking started'
 
@@ -47,6 +52,10 @@ LOOK_AFTER = timedelta(seconds=20)
 # Below this, an ISP blip could fall between probe checks.
 MIN_SECONDS_TO_CLEAR_ISP = 60
 MIN_INTERNET_DOWN_SECONDS = 30
+# How far back trouble can count as the real start of an outage.
+MAX_START_CORRECTION = timedelta(minutes=10)
+# The probe logs a heartbeat every hour, so longer silence means it wasn't running.
+MAX_SILENCE = timedelta(minutes=70)
 
 SECTIONS = [
     (ISP, "ISP", "The modem was reachable but the internet wasn't."),
@@ -156,23 +165,107 @@ def find_outages(events):
 
 
 def read_probe(lines):
-    """Return (states, reboots) from the probe log, oldest first.
+    """Return (states, reboots, seen) from the probe log, oldest first.
 
     states is a list of (time, state dict). reboots is a list of the times the
-    router was last seen alive before going off.
+    router was last seen alive before going off. seen is every time the probe
+    wrote anything, which shows whether it was running.
     """
     states = []
     reboots = []
+    seen = []
     for line in lines:
         try:
             log = json.loads(line)
+            time = parse_time(log['time'])
+            seen.append(time)
             if log.get('event') == 'reboot':
                 reboots.append(parse_time(log['down_since']))
             elif 'internet' in log:
-                states.append((parse_time(log['time']), log))
+                states.append((time, log))
         except (ValueError, KeyError, TypeError, AttributeError):
             continue
-    return states, reboots
+    return states, reboots, seen
+
+
+def read_old_monitor(lines):
+    """Return (states, seen) from wan-monitor.log, in the same shape as the probe.
+
+    It never checked the internet, so internet is None rather than up or down.
+    """
+    states = []
+    seen = []
+    current = {'link': 'up', 'modem': 1, 'route': 1, 'gateway': None, 'internet': None}
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        try:
+            time = datetime.strptime(' '.join(parts[:2]), '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        seen.append(time)
+        fields = dict(part.split('=', 1) for part in parts[4:] if '=' in part)
+        event = parts[3]
+        before = dict(current)
+        if event == 'carrier_change':
+            current['link'] = {'up': 'up', 'down': 'down'}.get(fields.get('carrier'), 'gone')
+        elif event == 'modem_change':
+            current['modem'] = 0 if fields.get('state') == 'down' else 1
+        elif event == 'default_route_change':
+            current['route'] = 0 if fields.get('state') == 'missing' else 1
+        if current != before or not states:
+            states.append((time, dict(current)))
+    return states, seen
+
+
+def combine_evidence(old_states, old_seen, states, seen):
+    """Use the old monitor only for the time before the probe was running."""
+    if not states:
+        return old_states, sorted(old_seen + seen)
+    first_probe = states[0][0]
+    return [s for s in old_states if s[0] < first_probe] + states, sorted(old_seen + seen)
+
+
+def probe_was_running(seen, start, end):
+    before = [t for t in seen if t <= start]
+    if not before:
+        return False
+    points = [before[-1]] + [t for t in seen if start < t <= end] + [end]
+    return all(b - a <= MAX_SILENCE for a, b in zip(points, points[1:]))
+
+
+def in_trouble(state):
+    if state['link'] != 'up' or state.get('route') == 0 or state['internet'] == 0:
+        return True
+    # A modem that stops answering pings while the internet works isn't an outage.
+    return state['modem'] == 0 and state['internet'] != 1
+
+
+def trouble_start(start, states, not_before=None):
+    """Return when the trouble behind an outage began.
+
+    The tunnel can take minutes to notice the connection has gone, so walk back
+    through the states to where the trouble it noticed actually started.
+    """
+    index = None
+    for i, (time, _) in enumerate(states):
+        if time <= start:
+            index = i
+    if index is None:
+        return start
+    if not in_trouble(states[index][1]):
+        # The trouble can clear moments before the tunnel gets around to noticing.
+        recently = index > 0 and start - states[index][0] <= LOOK_BEFORE
+        if not recently or not in_trouble(states[index - 1][1]):
+            return start
+        index -= 1
+    while index > 0 and in_trouble(states[index - 1][1]):
+        index -= 1
+    earliest = start - MAX_START_CORRECTION
+    if not_before is not None:
+        earliest = max(earliest, not_before)
+    return min(start, max(states[index][0], earliest))
 
 
 def states_during(states, start, end):
@@ -184,21 +277,32 @@ def states_during(states, start, end):
             yield state, seconds
 
 
-def classify(start, end, restarted, states, now):
+def classify(start, end, restarted, states, now, seen=None):
     """Return (section, cause) for an outage."""
     if not states or start < states[0][0]:
         return (NOT_ISP, CAUSE_RESTART) if restarted else (UNCLEAR, CAUSE_BEFORE)
 
     actual_end = end or now
-    seen = list(states_during(states, start - LOOK_BEFORE, actual_end + LOOK_AFTER))
+    if seen is not None and not probe_was_running(seen, start, actual_end):
+        return (NOT_ISP, CAUSE_RESTART) if restarted else (UNCLEAR, CAUSE_NO_PROBE)
+
+    during = list(states_during(states, start - LOOK_BEFORE, actual_end + LOOK_AFTER))
     duration = (actual_end - start).total_seconds()
 
-    if any(state['link'] == 'gone' for state, _ in seen):
+    if any(state['link'] == 'gone' for state, _ in during):
         return NOT_ISP, CAUSE_USB
-    if any(state['link'] == 'down' for state, _ in seen):
+    if any(state['link'] == 'down' for state, _ in during):
         return UNCLEAR, CAUSE_LINK
 
-    internet_down = [(state, seconds) for state, seconds in seen if not state['internet']]
+    if all(state['internet'] is None for state, _ in during):
+        # From before anything checked the internet, so it can't clear the ISP.
+        if restarted:
+            return NOT_ISP, CAUSE_RESTART
+        if any(state['modem'] == 0 for state, _ in during):
+            return UNCLEAR, CAUSE_MODEM
+        return UNCLEAR, CAUSE_UPSTREAM
+
+    internet_down = [(state, seconds) for state, seconds in during if state['internet'] == 0]
     if sum(seconds for _, seconds in internet_down) >= min(MIN_INTERNET_DOWN_SECONDS, duration / 2):
         if internet_down:
             modem_fine = all(state['modem'] for state, _ in internet_down)
@@ -211,13 +315,15 @@ def classify(start, end, restarted, states, now):
     return UNCLEAR, CAUSE_SHORT
 
 
-def update_history(history, outages, tracking_since, states, reboots, now):
+def update_history(history, outages, tracking_since, states, reboots, now, seen=None):
     """Merge what the logs say into the saved history and return the new history.
 
-    Finished outages keep the cause they were given when they ended, because
-    the logs behind them eventually get wiped or trimmed.
+    Rows are keyed by when the tunnel noticed the outage (detected), which stays
+    the same even when start gets corrected. Finished outages keep the cause they
+    were given when they ended, because the logs behind them eventually get wiped
+    or trimmed, unless they had no evidence and some has turned up since.
     """
-    rows = {row['start']: dict(row) for row in history.get('rows', [])}
+    rows = {row.get('detected', row['start']): dict(row) for row in history.get('rows', [])}
     reboot_keys = {to_time_str(down_since) for down_since in reboots}
     current_keys = {to_time_str(start) for start, _, _ in outages}
 
@@ -240,12 +346,16 @@ def update_history(history, outages, tracking_since, states, reboots, now):
         else:
             del rows[key]
 
-    for start, end, restarted in outages:
-        key = to_time_str(start)
-        if key in rows and rows[key]['end']:
+    previous_end = None
+    for detected, end, restarted in outages:
+        key = to_time_str(detected)
+        known = rows.get(key)
+        start = detected if restarted else trouble_start(detected, states, previous_end)
+        previous_end = end
+        if known and known['end'] and known['cause'] != CAUSE_BEFORE:
             continue
-        section, cause = classify(start, end, restarted, states, now)
-        rows[key] = {'start': key, 'end': to_time_str(end) if end else None,
+        section, cause = classify(start, end, restarted, states, now, seen)
+        rows[key] = {'start': to_time_str(start), 'detected': key, 'end': to_time_str(end) if end else None,
                      'section': section, 'cause': cause}
 
     tracking = history.get('tracking_since')
@@ -318,8 +428,8 @@ def render(history, now):
 
 def public_json(history, now):
     """The data behind the status page at updog.frostbit.in."""
-    return json.dumps({'updated': to_time_str(now), 'tracking_since': history['tracking_since'],
-                       'outages': history['rows']})
+    outages = [{key: row[key] for key in ('start', 'end', 'section', 'cause')} for row in history['rows']]
+    return json.dumps({'updated': to_time_str(now), 'tracking_since': history['tracking_since'], 'outages': outages})
 
 
 def write_atomic(path, text):
@@ -338,10 +448,12 @@ def read_lines(path):
         return []
 
 
-def main(log_path=LOG_PATH, output_path=OUTPUT_PATH, state_dir=STATE_DIR):
+def main(log_path=LOG_PATH, output_path=OUTPUT_PATH, state_dir=STATE_DIR, old_monitor_log=OLD_MONITOR_LOG):
     with open(log_path, encoding='utf-8', errors='replace') as f:
         outages, tracking_since = find_outages(read_events(f))
-    states, reboots = read_probe(read_lines(os.path.join(state_dir, 'probe.log')))
+    probe_states, reboots, probe_seen = read_probe(read_lines(os.path.join(state_dir, 'probe.log')))
+    old_states, old_seen = read_old_monitor(read_lines(old_monitor_log))
+    states, seen = combine_evidence(old_states, old_seen, probe_states, probe_seen)
 
     # A corrupt history file stops the script here, rather than losing the history.
     history_path = os.path.join(state_dir, 'history.json')
@@ -354,7 +466,7 @@ def main(log_path=LOG_PATH, output_path=OUTPUT_PATH, state_dir=STATE_DIR):
         history = {}
 
     now = datetime.now(timezone.utc)
-    history = update_history(history, outages, tracking_since, states, reboots, now)
+    history = update_history(history, outages, tracking_since, states, reboots, now, seen)
 
     os.makedirs(state_dir, exist_ok=True)
     history_text = json.dumps(history, indent=1)
@@ -367,4 +479,4 @@ def main(log_path=LOG_PATH, output_path=OUTPUT_PATH, state_dir=STATE_DIR):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    main(*sys.argv[1:5])
