@@ -1,3 +1,5 @@
+<img src="logo/updog-logo.svg" alt="The UpDog logo, a dog looking up, shaped like an up arrow" width="96" align="right">
+
 # UpDog 2.0
 
 [![Tests](https://github.com/milagrofrost/updog/actions/workflows/test.yml/badge.svg)](https://github.com/milagrofrost/updog/actions/workflows/test.yml)
@@ -38,6 +40,7 @@ PLUS, you get to tell people about "UpDog".
 | **During an outage** | A cached green banner for up to 4 hours, and no history | Red within about 30 seconds, with how long it's been down and a saved history |
 | **Neighbors** | Could only look | Can tap "Mine's down", so people can see it's not just them |
 | **After a reboot** | History gone | History kept |
+| **On your phone** | A bookmark, if you remembered | Installs as an app on iPhone and Android |
 
 ## How it works
 
@@ -62,7 +65,7 @@ flowchart TD
 
 | Piece | Where it runs | What it does |
 |---|---|---|
-| [`page/`](page/) | Cloudflare Pages | The status page |
+| [`page/`](page/) | Cloudflare Pages | The status page, which can also install as an app |
 | [`router/nginx.conf`](router/nginx.conf) | Router | Answers `okayokayokay` on `up.frostbit.in/test`, and serves the history on `uplog.frostbit.in` |
 | [`router/log-to-html.py`](router/log-to-html.py) | Router, from cron | Works out the outages from the tunnel log and the probe log |
 | [`router/updog-probe.sh`](router/updog-probe.sh) | Router, always on | Records the state of the link, modem, gateway and internet |
@@ -102,6 +105,7 @@ Replace these with your own:
 | `frostbit.in` | `page/index.html`, `router/nginx.conf`, `worker/wrangler.toml` |
 | `updog-frostbit`, the Cloudflare Pages project | Your deploy command |
 | `Matt` and the Spectrum outage link | `page/index.html` |
+| `UpDog`, if you rename it | `page/manifest.webmanifest` |
 | `Matt's` and `US/Eastern` | `router/log-to-html.py` |
 | `eth1` and `192.168.100.1`, your WAN and modem | Top of `router/updog-probe.sh` |
 
@@ -178,6 +182,10 @@ Create a Cloudflare Pages project, then deploy the `page` folder and bind it to 
 ```bash
 wrangler pages deploy page --project-name updog-frostbit --branch main
 ```
+
+Deploying the whole folder also makes the page installable as an app, with no app store involved. Android browsers offer an install button, and on iPhone the page explains how to use **Share > Add to Home Screen**.
+
+[`page/sw.js`](page/sw.js) lets the app open with no internet, by storing only the page and its icons. **Don't let it store the status check or outage data**, because a cached answer would show green during an outage. If nothing at all is reachable, the page says "Can't tell" rather than blaming the neighborhood.
 
 ### 5. Set up caching
 
@@ -259,6 +267,7 @@ cd worker && node --test
 ## Caveats
 
 - The status can stay green for up to 30 seconds after an outage starts, because Cloudflare caches it that long to protect the router.  Lower `s-maxage` in `nginx.conf` if you want it tighter.
+- Installing it as an app on iPhone is manual, because Apple doesn't let a page offer it.
 - During an outage, the history is the last saved copy, so it won't include the current outage.
 - The history updates every 5 mins, so the internet may be back up before the outage shows up on the page.
 - If the router power cycles, the tunnel logs are cleared, but finished outages are saved.  The start of the outage can be up to 5 minutes off, since that's how often the heartbeat is saved.

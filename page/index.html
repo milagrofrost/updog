@@ -13,6 +13,12 @@
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta name="twitter:card" content="summary_large_image">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <meta name="theme-color" content="#1a7a4a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="UpDog">
     <link id="favicon" rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23888'/></svg>">
     <style>
         :root {
@@ -119,6 +125,37 @@
         #reports:empty { display: none; }
         .report-area .small { margin: 10px 0 0; }
         .hero a { color: #fff; }
+        .install {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 12px;
+            padding: 12px;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+        }
+        .install[hidden] { display: none; }
+        .install img { width: 44px; height: 44px; border-radius: 10px; flex: none; }
+        .install p { flex: 1; margin: 0; font-size: 14px; }
+        .install button {
+            min-height: 36px;
+            padding: 6px 12px;
+            flex: none;
+            color: #fff;
+            background: var(--up);
+            border: 0;
+            border-radius: 8px;
+        }
+        .install button[hidden] { display: none; }
+        .install .close {
+            min-width: 36px;
+            padding: 0;
+            color: var(--muted);
+            background: none;
+            font-size: 20px;
+        }
+        .report-area[hidden] { display: none; }
         .saved {
             margin: 16px 0 0;
             padding: 10px 12px;
@@ -264,11 +301,18 @@
             <span id="checked"></span>
             <button id="again" class="again" type="button">Check again</button>
         </div>
-        <div class="report-area">
+        <div id="report-area" class="report-area">
             <button id="report" class="report" type="button">Mine's down</button>
             <p id="reports" role="status" aria-live="polite"></p>
             <p class="small">Tap it if your internet isn't working, so neighbors can see it's not just them. Have Spectrum? <a href="https://www.spectrum.net/outage">Check their outage page.</a></p>
         </div>
+    </div>
+
+    <div id="install" class="install" hidden>
+        <img src="/icon-192.png" alt="">
+        <p id="install-text">Add UpDog to your home screen, so it's there when you need it.</p>
+        <button id="install-button" type="button" hidden>Install</button>
+        <button id="install-close" class="close" type="button" aria-label="Dismiss">&times;</button>
     </div>
 
     <section>
@@ -337,6 +381,21 @@
         byId('favicon').href = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='${encodeURIComponent(color)}'/></svg>`;
     }
 
+    // If the Worker can't be reached either, the problem is probably this device's
+    // own connection, which says nothing about whether the neighborhood is down.
+    async function canReachAnything() {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
+        try {
+            await fetch(`${EDGE_URL}/status`, { signal: controller.signal, cache: 'no-store' });
+            return true;
+        } catch {
+            return false;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
     let lastUp = null;
     let edge = null;
     let reported = false;
@@ -388,7 +447,19 @@
         }
     }
 
+    function showNoConnection() {
+        lastUp = null;
+        byId('hero').className = 'hero';
+        byId('answer').textContent = 'Can\'t tell';
+        byId('explain').textContent = 'This device can\'t reach the internet at all, so it can\'t check on Matt\'s connection. If you\'re on Wi-Fi, try switching to cellular and checking again.';
+        byId('report-area').hidden = true;
+        document.title = 'Can\'t tell - Is the internet down?';
+        setFavicon('#888');
+        byId('checked').textContent = 'Checked at ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+    }
+
     function showStatus(up) {
+        byId('report-area').hidden = false;
         byId('hero').className = 'hero ' + (up ? 'up' : 'down');
         byId('answer').textContent = up ? 'Nope, it\'s up' : 'Looks like it';
         lastUp = up;
@@ -407,7 +478,11 @@
         byId('again').disabled = true;
         // Try twice, so one slow request on a phone doesn't tell someone it's down.
         const up = await reachable() || await reachable();
-        showStatus(up);
+        if (up || await canReachAnything()) {
+            showStatus(up);
+        } else {
+            showNoConnection();
+        }
         byId('again').disabled = false;
         checking = false;
     }
@@ -644,6 +719,60 @@
 
     byId('again').addEventListener('click', () => { refresh(); loadHistory(); });
     byId('report').addEventListener('click', sendReport);
+
+    /* ----- Installing it as an app ----- */
+
+    const INSTALL_DISMISSED = 'updog-install-dismissed';
+    let installPrompt = null;
+
+    function installDismissed() {
+        try { return localStorage.getItem(INSTALL_DISMISSED) === '1'; } catch { return false; }
+    }
+
+    function isInstalled() {
+        return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    }
+
+    function isIos() {
+        return /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+
+    function showInstall(text, withButton) {
+        if (isInstalled() || installDismissed()) return;
+        byId('install-text').textContent = text;
+        byId('install-button').hidden = !withButton;
+        byId('install').hidden = false;
+    }
+
+    if (isIos()) {
+        showInstall('Add UpDog to your home screen: tap the Share button, then "Add to Home Screen".', false);
+    }
+
+    addEventListener('beforeinstallprompt', event => {
+        event.preventDefault();
+        installPrompt = event;
+        showInstall('Add UpDog to your home screen, so it\'s there when you need it.', true);
+    });
+
+    addEventListener('appinstalled', () => { byId('install').hidden = true; });
+
+    byId('install-button').addEventListener('click', async () => {
+        byId('install').hidden = true;
+        if (installPrompt) {
+            installPrompt.prompt();
+            installPrompt = null;
+        }
+    });
+
+    byId('install-close').addEventListener('click', () => {
+        byId('install').hidden = true;
+        try { localStorage.setItem(INSTALL_DISMISSED, '1'); } catch { /* It just asks again next time. */ }
+    });
+
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(() => { /* The page works fine without it. */ });
+    }
 
     refresh();
     loadHistory();

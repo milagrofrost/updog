@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>UpDog</title>
+  <rect width="512" height="512" fill="#1a7a4a"/>
+  <path d="M 196 262 L 316 262 L 316 424 C 316 440 304 452 288 452 L 224 452 C 208 452 196 440 196 424 Z" fill="#fff8ec"/>
+  <path d="M 196 340 L 316 340 L 316 372 L 196 372 Z" fill="#c8382e"/>
+  <path d="M 172 182 C 160 170 140 172 130 186 L 72 268 C 56 292 72 322 100 318 C 128 314 156 296 176 268 C 192 244 190 200 172 182 Z" fill="#e0a458"/>
+  <path d="M 340 182 C 352 170 372 172 382 186 L 440 268 C 456 292 440 322 412 318 C 384 314 356 296 336 268 C 320 244 322 200 340 182 Z" fill="#e0a458"/>
+  <path d="M 256 58 C 268 58 278 64 286 76 L 372 226 C 382 244 376 262 358 272 C 330 288 296 298 256 298 C 216 298 182 288 154 272 C 136 262 130 244 140 226 L 226 76 C 234 64 244 58 256 58 Z" fill="#fff8ec"/>
+  <ellipse cx="256" cy="104" rx="30" ry="25" fill="#23262a"/>
+  <ellipse cx="247" cy="96" rx="8" ry="5" fill="#6b7077"/>
+  <ellipse cx="208" cy="216" rx="17" ry="19" fill="#23262a"/>
+  <ellipse cx="304" cy="216" rx="17" ry="19" fill="#23262a"/>
+  <ellipse cx="213" cy="209" rx="5" ry="6" fill="#ffffff"/>
+  <ellipse cx="309" cy="209" rx="5" ry="6" fill="#ffffff"/>
+  <ellipse cx="256" cy="372" rx="27" ry="27" fill="#fff8ec"/>
+  <ellipse cx="256" cy="372" rx="19" ry="19" fill="#35d07f"/>
+</svg>
