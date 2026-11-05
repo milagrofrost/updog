@@ -144,7 +144,7 @@ The tests are in [`router/test_log_to_html.py`](router/test_log_to_html.py). The
 
 **Sort Outages by Cause** 
 
-[`router/updog-probe.sh`](router/updog-probe.sh) runs all the time and records the link to the modem, the modem, the public IP and route, the ISP's gateway and the internet. The local checks run every 5 seconds and the internet checks every 15. It only writes when something changes, plus an hourly heartbeat that proves it's still running and a small file every 5 minutes for spotting reboots and power loss.
+[`router/updog-probe.sh`](router/updog-probe.sh) runs all the time and records the link to the modem, the modem, the public IP and route, the ISP's gateway and the internet. The local checks run every second, and network events from `netifd` wake it straight away. The gateway and internet checks run every 15 seconds, or right after an event, because a ping can't be event driven. It only writes when something changes, plus an hourly heartbeat that proves it's still running and a small file every 5 minutes for spotting reboots and power loss.
 
 The tunnel can take a few minutes to notice the connection has gone, so the script uses this to work out when an outage really started, as well as to sort it:
 
