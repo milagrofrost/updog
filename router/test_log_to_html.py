@@ -32,8 +32,12 @@ def outages(lines):
     return [(int((s - T0).total_seconds()), None if e is None else int((e - T0).total_seconds())) for s, e, _ in found], since
 
 
-def state(seconds, link='up', modem=1, gateway=1, internet=1):
-    return at(seconds), {'link': link, 'modem': modem, 'gateway': gateway, 'internet': internet}
+def state(seconds, link='up', modem=1, gateway=1, internet=1, route=1):
+    return at(seconds), {'link': link, 'modem': modem, 'route': route, 'gateway': gateway, 'internet': internet}
+
+
+def old_state(seconds, link='up', modem=1, route=1):
+    return state(seconds, link, modem, None, None, route)
 
 
 ALL_UP = [line(0, m.REGISTERED, c) for c in range(4)]
@@ -147,15 +151,129 @@ class Classify(unittest.TestCase):
         self.assertEqual(self.check(100, None, states), (m.ISP, m.CAUSE_ISP))
 
 
+class ClassifyFromOldMonitor(unittest.TestCase):
+    def check(self, states, restarted=False):
+        return m.classify(at(100), at(400), restarted, states, at(100000))
+
+    def test_all_fine_can_only_point_upstream(self):
+        self.assertEqual(self.check([old_state(0)]), (m.UNCLEAR, m.CAUSE_UPSTREAM))
+
+    def test_modem_silent_is_unclear(self):
+        self.assertEqual(self.check([old_state(0), old_state(90, modem=0), old_state(300)]), (m.UNCLEAR, m.CAUSE_MODEM))
+
+    def test_link_down_is_unclear(self):
+        self.assertEqual(self.check([old_state(0), old_state(90, link='down'), old_state(300)]), (m.UNCLEAR, m.CAUSE_LINK))
+
+    def test_adapter_gone_is_not_the_isp(self):
+        self.assertEqual(self.check([old_state(0), old_state(90, link='gone'), old_state(300)]), (m.NOT_ISP, m.CAUSE_USB))
+
+    def test_restart_is_not_the_isp(self):
+        self.assertEqual(self.check([old_state(0)], restarted=True), (m.NOT_ISP, m.CAUSE_RESTART))
+
+
+class ClassifyWithoutTheProbe(unittest.TestCase):
+    def test_silent_probe_cant_clear_the_isp(self):
+        result = m.classify(at(10000), at(20000), False, [state(0)], at(100000), seen=[at(0)])
+        self.assertEqual(result, (m.UNCLEAR, m.CAUSE_NO_PROBE))
+
+    def test_running_probe_can(self):
+        seen = [at(0), at(3600), at(7200), at(10800)]
+        result = m.classify(at(4000), at(5000), False, [state(0)], at(100000), seen=seen)
+        self.assertEqual(result, (m.NOT_ISP, m.CAUSE_TUNNEL))
+
+
 class ReadProbe(unittest.TestCase):
     def test_reads_states_and_reboots_and_skips_bad_lines(self):
         lines = ['junk\n',
                  '{"time":"2026-11-02T12:00:00Z","link":"up","modem":1,"gateway":1,"internet":1}\n',
                  '{"time":"2026-11-02T13:00:00Z","event":"reboot","down_since":"2026-11-02T12:30:00Z"}\n',
                  '{"time":"nope","internet":1}\n']
-        states, reboots = m.read_probe(lines)
+        states, reboots, seen = m.read_probe(lines)
         self.assertEqual([t for t, _ in states], [T0])
         self.assertEqual(reboots, [at(1800)])
+        self.assertEqual(seen, [T0, at(3600)])
+
+    def test_heartbeats_count_as_seen_but_not_as_states(self):
+        states, _, seen = m.read_probe(['{"time":"2026-11-02T12:00:00Z","event":"heartbeat"}\n'])
+        self.assertEqual(states, [])
+        self.assertEqual(seen, [T0])
+
+
+class ReadOldMonitor(unittest.TestCase):
+    LINES = ['2026-11-02 12:00:00 UTC service_started device=eth1\n',
+             '2026-11-02 12:00:00 UTC carrier_change device=eth1 carrier=up\n',
+             '2026-11-02 12:01:00 UTC heartbeat carrier=1 modem=up\n',
+             '2026-11-02 12:02:00 UTC carrier_change device=eth1 carrier=down\n',
+             '2026-11-02 12:02:05 UTC default_route_change device=eth1 state=missing\n',
+             '2026-11-02 12:03:00 UTC modem_change modem=192.168.100.1 state=down carrier=0\n',
+             '2026-11-02 12:04:00 UTC carrier_change device=eth1 carrier=unavailable\n',
+             'garbage\n', 'not a date UTC carrier_change carrier=down\n']
+
+    def test_events_become_states(self):
+        states, seen = m.read_old_monitor(self.LINES)
+        self.assertEqual([(int((t - T0).total_seconds()), s['link'], s['modem'], s['route']) for t, s in states],
+                         [(0, 'up', 1, 1), (120, 'down', 1, 1), (125, 'down', 1, 0), (180, 'down', 0, 0), (240, 'gone', 0, 0)])
+        self.assertEqual(len(seen), 7)
+
+    def test_it_never_knew_about_the_internet(self):
+        self.assertIsNone(m.read_old_monitor(self.LINES)[0][0][1]['internet'])
+
+    def test_probe_takes_over_from_the_old_monitor(self):
+        states, seen = m.combine_evidence([old_state(0), old_state(100, modem=0)], [at(0), at(100)], [state(50)], [at(50)])
+        self.assertEqual([int((t - T0).total_seconds()) for t, _ in states], [0, 50])
+        self.assertEqual(seen, [at(0), at(50), at(100)])
+
+
+class ProbeWasRunning(unittest.TestCase):
+    HOUR = 3600
+
+    def test_heartbeats_either_side(self):
+        self.assertTrue(m.probe_was_running([at(0), at(self.HOUR)], at(100), at(200)))
+
+    def test_silence_across_the_outage(self):
+        self.assertFalse(m.probe_was_running([at(0), at(10 * self.HOUR)], at(100), at(9 * self.HOUR)))
+
+    def test_nothing_before_it(self):
+        self.assertFalse(m.probe_was_running([at(500)], at(100), at(600)))
+
+    def test_probe_recently_stopped(self):
+        self.assertFalse(m.probe_was_running([at(0)], at(5 * self.HOUR), at(5 * self.HOUR + 60)))
+
+
+class TroubleStart(unittest.TestCase):
+    def test_walks_back_to_where_the_trouble_began(self):
+        states = [state(0), state(100, internet=0), state(200, internet=0, gateway=0), state(300)]
+        self.assertEqual(m.trouble_start(at(250), states), at(100))
+
+    def test_no_trouble_keeps_the_tunnel_time(self):
+        self.assertEqual(m.trouble_start(at(250), [state(0)]), at(250))
+
+    def test_trouble_that_just_cleared_still_counts(self):
+        states = [state(0), state(100, internet=0), state(240)]
+        self.assertEqual(m.trouble_start(at(250), states), at(100))
+
+    def test_old_trouble_doesnt_count(self):
+        states = [state(0), state(100, internet=0), state(120)]
+        self.assertEqual(m.trouble_start(at(1000), states), at(1000))
+
+    def test_lost_route_and_link_count_as_trouble(self):
+        states = [old_state(0), old_state(100, link='down', route=0), old_state(110, route=0), old_state(400)]
+        self.assertEqual(m.trouble_start(at(300), states), at(100))
+
+    def test_modem_silent_with_internet_working_isnt_trouble(self):
+        self.assertEqual(m.trouble_start(at(250), [state(0), state(100, modem=0)]), at(250))
+
+    def test_modem_silent_with_internet_unknown_is_trouble(self):
+        self.assertEqual(m.trouble_start(at(250), [old_state(0), old_state(100, modem=0)]), at(100))
+
+    def test_correction_has_a_limit(self):
+        self.assertEqual(m.trouble_start(at(2000), [state(0), state(100, internet=0)]), at(2000 - 600))
+
+    def test_stops_at_the_previous_outage(self):
+        self.assertEqual(m.trouble_start(at(500), [state(0), state(100, internet=0)], not_before=at(300)), at(300))
+
+    def test_before_any_evidence(self):
+        self.assertEqual(m.trouble_start(at(50), [state(100)]), at(50))
 
 
 class UpdateHistory(unittest.TestCase):
@@ -167,6 +285,33 @@ class UpdateHistory(unittest.TestCase):
         second = self.update(first, found=[], since=at(50000))
         self.assertEqual(len(second['rows']), 1)
         self.assertEqual(second['tracking_since'], m.to_time_str(T0))
+
+    def test_start_is_corrected_and_the_row_keeps_its_identity(self):
+        states = [state(0), state(100, internet=0), state(500)]
+        first = self.update(found=[(at(250), at(400), False)], states=states)
+        self.assertEqual(first['rows'][0]['start'], m.to_time_str(at(100)))
+        self.assertEqual(first['rows'][0]['detected'], m.to_time_str(at(250)))
+        second = self.update(first, found=[(at(250), at(400), False)], states=states)
+        self.assertEqual(len(second['rows']), 1)
+
+    def test_restarts_keep_the_tunnel_time(self):
+        states = [state(0), state(100, internet=0), state(500)]
+        row = self.update(found=[(at(250), at(400), True)], states=states)['rows'][0]
+        self.assertEqual(row['start'], m.to_time_str(at(250)))
+
+    def test_rows_without_evidence_get_sorted_once_it_turns_up(self):
+        first = self.update(found=[(at(250), at(400), False)])
+        self.assertEqual(first['rows'][0]['cause'], m.CAUSE_BEFORE)
+        states = [old_state(0), old_state(100, modem=0), old_state(300)]
+        second = self.update(first, found=[(at(250), at(400), False)], states=states)
+        self.assertEqual(len(second['rows']), 1)
+        self.assertEqual(second['rows'][0]['cause'], m.CAUSE_MODEM)
+        self.assertEqual(second['rows'][0]['start'], m.to_time_str(at(100)))
+
+    def test_rows_from_before_the_correction_arent_duplicated(self):
+        saved = {'tracking_since': m.to_time_str(T0), 'rows': [{'start': m.to_time_str(at(250)), 'end': m.to_time_str(at(400)), 'section': m.NOT_ISP, 'cause': m.CAUSE_RESTART}]}
+        result = self.update(saved, found=[(at(250), at(400), True)])
+        self.assertEqual(len(result['rows']), 1)
 
     def test_finished_outages_keep_their_cause(self):
         first = self.update(found=[(at(100), at(400), False)], states=[state(0)])
@@ -245,6 +390,20 @@ class Render(unittest.TestCase):
 
 
 class Main(unittest.TestCase):
+    def test_old_monitor_log_is_used(self):
+        with tempfile.TemporaryDirectory() as d:
+            log, out, old = os.path.join(d, 'c.log'), os.path.join(d, 'index.html'), os.path.join(d, 'old.log')
+            self.write_log(old, ['2026-11-02 11:00:00 UTC carrier_change device=eth1 carrier=up\n',
+                                 '2026-11-02 11:59:00 UTC heartbeat carrier=1\n',
+                                 '2026-11-02 12:00:05 UTC modem_change modem=m state=down\n',
+                                 '2026-11-02 12:05:00 UTC heartbeat carrier=1\n'])
+            self.write_log(log, ALL_UP + [line(10, m.LOST, c) for c in range(4)] + [line(100, m.REGISTERED, 0)])
+            m.main(log, out, d, old)
+            with open(os.path.join(d, 'outages.json')) as f:
+                row = json.load(f)['outages'][0]
+            self.assertEqual(row['cause'], m.CAUSE_MODEM)
+            self.assertEqual(row['start'], m.to_time_str(at(5)))
+
     def write_log(self, path, lines):
         with open(path, 'w') as f:
             f.writelines(lines)
@@ -253,7 +412,7 @@ class Main(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             log, out, state_dir = os.path.join(d, 'c.log'), os.path.join(d, 'logs', 'index.html'), os.path.join(d, 'state')
             self.write_log(log, ALL_UP)
-            m.main(log, out, state_dir)
+            m.main(log, out, state_dir, os.path.join(d, 'none.log'))
             self.assertEqual(sorted(os.listdir(os.path.dirname(out))), ['index.html', 'outages.json'])
             self.assertEqual(os.listdir(state_dir), ['history.json'])
 
@@ -261,7 +420,7 @@ class Main(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             log, out = os.path.join(d, 'c.log'), os.path.join(d, 'index.html')
             self.write_log(log, ALL_UP + [line(10, m.LOST, c) for c in range(4)] + [line(50, m.REGISTERED, 0)])
-            m.main(log, out, d)
+            m.main(log, out, d, os.path.join(d, 'none.log'))
             with open(os.path.join(d, 'outages.json')) as f:
                 data = json.load(f)
             self.assertEqual(data['tracking_since'], m.to_time_str(T0))
@@ -269,14 +428,15 @@ class Main(unittest.TestCase):
             self.assertEqual(data['outages'][0]['end'], m.to_time_str(at(50)))
             self.assertEqual(data['outages'][0]['section'], m.UNCLEAR)
             self.assertIn('updated', data)
+            self.assertNotIn('detected', data['outages'][0])
 
     def test_history_survives_the_log_being_wiped(self):
         with tempfile.TemporaryDirectory() as d:
             log, out = os.path.join(d, 'c.log'), os.path.join(d, 'index.html')
             self.write_log(log, ALL_UP + [line(10, m.LOST, c) for c in range(4)] + [line(50, m.REGISTERED, 0)])
-            m.main(log, out, d)
+            m.main(log, out, d, os.path.join(d, 'none.log'))
             self.write_log(log, [])
-            m.main(log, out, d)
+            m.main(log, out, d, os.path.join(d, 'none.log'))
             with open(out) as f:
                 self.assertIn('with 1 outages', f.read())
 
@@ -286,7 +446,7 @@ class Main(unittest.TestCase):
             with open(out, 'w') as f:
                 f.write('old')
             with self.assertRaises(FileNotFoundError):
-                m.main(os.path.join(d, 'missing.log'), out, d)
+                m.main(os.path.join(d, 'missing.log'), out, d, os.path.join(d, 'none.log'))
             with open(out) as f:
                 self.assertEqual(f.read(), 'old')
 
@@ -297,7 +457,7 @@ class Main(unittest.TestCase):
             with open(saved, 'w') as f:
                 f.write('{broken')
             with self.assertRaises(ValueError):
-                m.main(log, out, d)
+                m.main(log, out, d, os.path.join(d, 'none.log'))
             with open(saved) as f:
                 self.assertEqual(f.read(), '{broken')
 
