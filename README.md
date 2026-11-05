@@ -273,34 +273,6 @@ In Notifications, add a Tunnel Health alert for when the tunnel goes down. Skip 
 
 ---
 
-**Back Up the Router**
-
-[`router/updog-backup.sh`](router/updog-backup.sh) runs from cron, encrypts the router's config and pushes it to a private git repo. No other machine needs to be on. It leaves out large binaries you can download again, so each backup is tiny.
-
-It uses `age` with a public key, so the router can encrypt but can't read its own backups. Keep the private key somewhere safe and away from the router, because without it the backups are useless.
-
-```bash
-opkg install git                    # and put the age binary in /usr/bin
-age-keygen -o backup-key.txt        # on your PC, not the router
-dropbearkey -t ed25519 -f /root/.ssh/updog-backup-key
-```
-
-Add that key's public half to the private repo as a deploy key with write access, and add `github.com`'s host key to `/root/.ssh/known_hosts`. Then create `/root/updog/backup.conf`:
-
-```sh
-BACKUP_REPO=git@github.com:you/router-backup.git
-BACKUP_RECIPIENT=age1...your-public-key
-BACKUP_SSH_KEY=/root/.ssh/updog-backup-key
-```
-
-Then add the cron job. It runs three times a day but skips if there's been a backup in the last 20 hours, so a failure at night gets retried:
-
-```bash
-30 8,14,20 * * * /root/updog-backup.sh
-```
-
-`deploy.sh status` warns if the last backup is over 2 days old. Test a restore once it's running, because a backup you can't restore is no backup at all.
-
 **Updating the Router**
 
 
