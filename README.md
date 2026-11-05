@@ -299,7 +299,17 @@ Then add the cron job. It runs three times a day but skips if there's been a bac
 30 8,14,20 * * * /root/updog-backup.sh
 ```
 
-`deploy.sh status` warns if the last backup is over 2 days old. Test a restore once it's running, because a backup you can't restore is no backup at all.
+To also keep an unencrypted copy on an NFS share, install `nfs-utils`, `kmod-fs-nfs` and `kmod-fs-nfs-v3`, create the folder on the share, and add this to `backup.conf`:
+
+```sh
+BACKUP_NFS_SHARE=server:/share
+BACKUP_NFS_DIR=router-backups
+BACKUP_NFS_OWNER=1000:1000
+```
+
+The router mounts the share only while it copies the backup, and keeps one file per day. If the share is unavailable, it logs a warning and the encrypted backup still goes out. That copy includes your tunnel credentials and SSH keys in the clear, so think about who else can reach the share.
+
+`deploy.sh status` warns if the last backup or copy is over 2 days old. Test a restore once it's running, because a backup you can't restore is no backup at all.
 
 **Updating the Router**
 

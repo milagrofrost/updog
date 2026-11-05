@@ -45,6 +45,9 @@ check_router_setup() {
     remote 'grep -q updog-backup /etc/crontabs/root' || echo "Warning: no cron job runs updog-backup.sh"
     remote '[ -f /root/updog/last-backup ] && [ $(($(date +%s) - $(date -r /root/updog/last-backup +%s))) -lt 172800 ]' ||
         echo "Warning: the router hasn't backed up in over 2 days. See /root/updog/backup.log"
+    remote '! grep -q "^BACKUP_NFS_SHARE=" /root/updog/backup.conf 2>/dev/null ||
+        { [ -f /root/updog/last-share-copy ] && [ $(($(date +%s) - $(date -r /root/updog/last-share-copy +%s))) -lt 172800 ]; }' ||
+        echo "Warning: the router hasn't copied a backup to the share in over 2 days. See /root/updog/backup.log"
 }
 
 status() {

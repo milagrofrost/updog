@@ -7,6 +7,8 @@
 #   updog-backup.sh --force   Run now
 #
 # Settings come from backup.conf: BACKUP_REPO, BACKUP_RECIPIENT and BACKUP_SSH_KEY.
+# To also keep an unencrypted copy on an NFS share, add BACKUP_NFS_SHARE, like
+# server:/share, plus optional BACKUP_NFS_DIR and BACKUP_NFS_OWNER (uid:gid).
 
 set -u
 
@@ -19,6 +21,11 @@ CONF="${BACKUP_CONF:-$STATE_DIR/backup.conf}"
 WORK="${BACKUP_WORK:-/tmp/updog-backup}"
 LOG="$STATE_DIR/backup.log"
 LAST_SUCCESS="$STATE_DIR/last-backup"
+LAST_SHARE_COPY="$STATE_DIR/last-share-copy"
+# Outside $WORK, so cleaning that up can't touch anything on the share.
+NFS_MOUNT="${BACKUP_NFS_MOUNT:-/tmp/updog-backup-share}"
+NFS_MOUNT_TIMEOUT=30
+share_note=""
 BACKUP_FILE="router-backup.tar.gz.age"
 MIN_AGE_SECONDS=72000
 MAX_LOG_LINES=500
@@ -43,6 +50,12 @@ log() {
     fi
 }
 
+warn() {
+    log "WARNING: $1"
+    logger -t updog-backup -p daemon.warn "WARNING: $1"
+    echo "Warning: $1" >&2
+}
+
 fail() {
     log "FAILED: $1"
     logger -t updog-backup -p daemon.err "FAILED: $1"
@@ -50,7 +63,62 @@ fail() {
     exit 1
 }
 
-cleanup() { rm -rf "$WORK"; }
+unmount_share() {
+    if grep -q " $NFS_MOUNT " /proc/mounts; then
+        umount "$NFS_MOUNT" || umount -f "$NFS_MOUNT" || umount -l "$NFS_MOUNT"
+    fi
+    # rmdir, not rm -rf, so nothing can ever delete files on a share still mounted.
+    rmdir "$NFS_MOUNT" 2>/dev/null
+}
+
+cleanup() {
+    unmount_share
+    rm -rf "$WORK"
+}
+
+mount_share() {
+    mkdir -p "$NFS_MOUNT" || return 1
+    mount -t nfs -o vers=3,soft,nolock,timeo=50,retrans=2,noexec,nosuid,nodev "$BACKUP_NFS_SHARE" "$NFS_MOUNT" &
+    mounting=$!
+    waited=0
+    while kill -0 "$mounting" 2>/dev/null; do
+        if [ "$waited" -ge "$NFS_MOUNT_TIMEOUT" ]; then
+            kill "$mounting" 2>/dev/null
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$mounting" && grep -q " $NFS_MOUNT " /proc/mounts
+}
+
+# Saves the backup unencrypted on the share. A failure here is only a warning,
+# because it shouldn't stop the encrypted copy from going off-site.
+copy_to_share() {
+    source_file="$1"
+    folder="$NFS_MOUNT/${BACKUP_NFS_DIR:-router-backups}"
+    name="router-backup-$(date -u +%Y-%m-%d).tar.gz"
+
+    mount_share || { warn "couldn't mount $BACKUP_NFS_SHARE"; return 1; }
+    if [ ! -d "$folder" ]; then
+        warn "no folder $folder on the share"
+        unmount_share
+        return 1
+    fi
+    if cp "$source_file" "$folder/.incoming" &&
+        gzip -t "$folder/.incoming" &&
+        chmod 600 "$folder/.incoming" &&
+        { [ -z "${BACKUP_NFS_OWNER:-}" ] || chown "$BACKUP_NFS_OWNER" "$folder/.incoming"; } &&
+        mv "$folder/.incoming" "$folder/$name" &&
+        ln -sf "$name" "$folder/router-backup-latest.tar.gz"; then
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$LAST_SHARE_COPY"
+        share_note=", copied to the share"
+    else
+        rm -f "$folder/.incoming"
+        warn "couldn't write the copy to the share"
+    fi
+    unmount_share
+}
 
 packages_list() {
     if command -v apk >/dev/null 2>&1; then
@@ -99,6 +167,10 @@ for file in $MUST_CONTAIN; do
     grep -qx "$file" "$WORK/contents.txt" || fail "the archive is missing $file"
 done
 
+if [ -n "${BACKUP_NFS_SHARE:-}" ]; then
+    copy_to_share "$WORK/backup.tar.gz"
+fi
+
 age -r "$BACKUP_RECIPIENT" -o "$WORK/backup.age" "$WORK/backup.tar.gz" || fail "encryption failed"
 rm -f "$WORK/backup.tar.gz"
 
@@ -119,4 +191,4 @@ git push --quiet origin HEAD 2>"$WORK/git.err" || fail "couldn't push: $(tail -1
 cd / || true
 
 date -u +%Y-%m-%dT%H:%M:%SZ > "$LAST_SUCCESS"
-log "OK: $count files, $size bytes"
+log "OK: $count files, $size bytes$share_note"
