@@ -4,7 +4,10 @@
 
 A status page that answers the question my neighbors keep asking: is the internet down? It runs on an OpenWrt router and Cloudflare's free tier.
 
-![Is the internet down?](page/preview.png)
+<p>
+  <img src="updog-2.0-status.png" alt="The status page answering: Nope, it's up, with a Mine's down button" width="300">
+  <img src="updog-2.0-history.png" alt="Outage stats, a 90-day chart and a list of recent outages" width="300">
+</p>
 
 https://updog.frostbit.in
 
