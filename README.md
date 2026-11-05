@@ -1,5 +1,7 @@
 **How to Create a Cloudflare Tunnel-Based Internet Status Checker** 
 
+[![Tests](https://github.com/milagrofrost/updog/actions/workflows/test.yml/badge.svg)](https://github.com/milagrofrost/updog/actions/workflows/test.yml)
+
 This guide walks through the steps of creating a web page that displays your internet connection status, using Cloudflare Tunnels, OpenWrt, and a Cloudflare Page.
 
 ![alt text](updog.png)
@@ -268,6 +270,21 @@ In Notifications, add a Tunnel Health alert for when the tunnel goes down. Skip 
 **Share It** 
 
 [`share/`](share/) has a QR code for the neighborhood post, and `page/preview.png` is the image shown when the link gets shared.
+
+---
+
+**Updating the Router**
+
+[`deploy.sh`](deploy.sh) compares the router with the repo and updates anything that's different. It only needs SSH access.
+
+```bash
+ROUTER=root@192.168.1.1 ./deploy.sh status
+ROUTER=root@192.168.1.1 ./deploy.sh deploy
+```
+
+It checks each new file on the router before changing anything, including running the outage script against copies of your real logs. If any file fails, nothing changes. Otherwise it installs the changed files, saves the old ones with a `.prev` extension, and restarts only the services affected. The status page and Worker deploy with `wrangler` instead.
+
+It doesn't install packages, set up the cron job or configure the tunnel, so do those by hand the first time. It warns you if the cron job or `pytz` is missing.
 
 ---
 

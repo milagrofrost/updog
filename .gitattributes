@@ -1,0 +1,5 @@
+# These run on the router, which can't handle Windows line endings.
+*.sh text eol=lf
+*.init text eol=lf
+*.py text eol=lf
+*.conf text eol=lf

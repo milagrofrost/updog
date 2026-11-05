@@ -1,0 +1,48 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  router-script:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # What the router runs now, and what OpenWrt 25.12 ships.
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install pytz
+      - run: python -m unittest test_log_to_html
+        working-directory: router
+
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test
+        working-directory: worker
+
+  shell-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check syntax
+        run: |
+          sh -n router/updog-probe.sh
+          sh -n router/updog-probe.init
+          sh -n deploy.sh
+      - name: Check for bugs
+        run: shellcheck --shell=dash --severity=warning --exclude=SC2039,SC3045 router/updog-probe.sh deploy.sh
