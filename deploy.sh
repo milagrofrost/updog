@@ -18,6 +18,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 FILES="router/log-to-html.py:/root/log-to-html.py
 router/updog-probe.sh:/root/updog-probe.sh
 router/updog-probe.init:/etc/init.d/updog-probe
+router/updog-backup.sh:/root/updog-backup.sh
 router/nginx.conf:/etc/nginx/nginx.conf"
 
 send_to_router() { ssh -o BatchMode=yes -o ConnectTimeout=6 -o ServerAliveInterval=5 "$ROUTER" "$@"; }
@@ -41,6 +42,9 @@ changed_files() {
 check_router_setup() {
     remote 'grep -q log-to-html /etc/crontabs/root' || echo "Warning: no cron job runs log-to-html.py"
     remote 'python3 -c "import pytz"' 2>/dev/null || echo "Warning: pytz isn't installed on the router"
+    remote 'grep -q updog-backup /etc/crontabs/root' || echo "Warning: no cron job runs updog-backup.sh"
+    remote '[ -f /root/updog/last-backup ] && [ $(($(date +%s) - $(date -r /root/updog/last-backup +%s))) -lt 172800 ]' ||
+        echo "Warning: the router hasn't backed up in over 2 days. See /root/updog/backup.log"
 }
 
 status() {

@@ -43,6 +43,7 @@ jobs:
         run: |
           sh -n router/updog-probe.sh
           sh -n router/updog-probe.init
+          sh -n router/updog-backup.sh
           sh -n deploy.sh
       - name: Check for bugs
-        run: shellcheck --shell=dash --severity=warning --exclude=SC2039,SC3045 router/updog-probe.sh deploy.sh
+        run: shellcheck --shell=dash --severity=warning --exclude=SC2039,SC3045 router/updog-probe.sh router/updog-backup.sh deploy.sh
